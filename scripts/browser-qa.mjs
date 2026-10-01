@@ -17,6 +17,7 @@ async function drain(){if(draining)return;draining=true;try{while(f.sent.length)
  const h=fixture(x.asset_labels[0]?.id,x.user_note||x.original_or_corrected_text);
  if(!x.asset_labels.some(a=>a.mime.startsWith('image/')))h.claims.forEach(c=>c.evidence=[{asset_id:null,quote:x.original_or_corrected_text,origin:'user',certainty:'explicit'}]);
  if(x.candidates.length){h.comparisons=[{target_id:x.candidates[0].id,kind:'shares_structure_with',shared_structure:'反応を先に提示する仕組みが共通している。',differences:'緊張と笑いでは、対象を明かした後の効果が異なる。',question:'どこから笑いに変わるのか？',claim_ids:['c1'],target_claim_ids:['c1']}];h.concepts[0].existing_id=x.concepts[0]?.id||null;}
+ if(x.views.length)h.view_proposals=[{view_id:x.views[0].id,base_revision:x.views[0].version,text:'反応を先に見せる演出は、対象が未知のときに効きそう。笑いと緊張では明かし方も異なる。',reason:'別のメモとの比較から条件を加えた。',claim_ids:['c2']}];
  return h;
  }));}}finally{draining=false;}}
 const server=createServer(async(req,res)=>{
@@ -54,7 +55,9 @@ try{
  await page.evaluate(base64=>{const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0)),data=new DataTransfer();data.items.add(new File([bytes],'pasted.png',{type:'image/png'}));document.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));},png.toString('base64'));
  await expect(page.getByRole('dialog')).not.toBeVisible();await page.reload();await expect(page.locator('.capture-row')).toHaveCount(2);
  await page.locator('.capture-row').first().click();await expect(page.getByText('以前のメモとのつながり',{exact:true})).toBeVisible();await page.screenshot({path:'artifacts/mobile-comparison.png',fullPage:true});
+ await expect(page.getByRole('button',{name:'この見方に更新',exact:true})).toBeVisible();await expect(page.locator('.primary:visible')).toHaveCount(1);
  await page.setViewportSize({width:1280,height:900});await page.screenshot({path:'artifacts/desktop-detail.png',fullPage:true});assertNoOverflow(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth));
+ await page.getByRole('button',{name:'この見方に更新',exact:true}).click();await expect(page.getByText('自分の漫画観 · 第3版',{exact:true})).toBeVisible();
  await page.locator('#back').click();await page.screenshot({path:'artifacts/desktop-feed.png',fullPage:true});await expect(page.locator('.primary:visible')).toHaveCount(1);
  await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('audio');await page.locator('#record-audio').click();await expect(page.locator('#capture-error')).not.toBeEmpty();await page.getByText('音声ファイルから残す',{exact:true}).click();await expect(page.locator('#audio-file')).toBeVisible();
  if(errors.length)throw new Error(errors.join('\n'));

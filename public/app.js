@@ -212,7 +212,7 @@ function evidenceHTML(c,e) {
 }
 function renderCapture() {
   const c=currentCapture,h=c.harvest,label=statusLabel({...c.job,error_code:c.job?.error_code});
-  const proposal=c.proposals.find(p=>!p.adopted_view_id)||c.proposals[0];
+  const proposal=c.proposals.find(p=>!p.adopted_view_id&&p.view_id)||c.proposals.find(p=>!p.adopted_view_id)||c.proposals[0];
   app.innerHTML=`${header(false)}<button id="back" class="back">← 面白さのメモ</button><article>
     <div class="detail-head"><p class="eyebrow">${esc(c.source_title||'作品名なし')}${c.source_inherited?'（直前の作品から引き継ぎ）':''} · ${date(c.created_at)}</p><h1>${esc(h?.summary||c.note||c.original_text||'写真を残しました。')}</h1>${label?`<p class="status">${esc(label)}</p>`:''}
     ${['failed','blocked'].includes(c.job?.state)?`<p class="subtle">${esc(errors[c.job.error_code]||'原資料は保存済みです。詳細から再試行できます。')}</p>`:''}</div>
@@ -221,7 +221,7 @@ function renderCapture() {
     ${h?`${c.harvest_version!==c.version?'<p class="subtle">以下は更新前の分析です。新しい分析ができるまで残しています。</p>':''}<section class="detail-section"><h2>面白さの言語化</h2>${h.claims.map(claim=>`<div class="knowledge-item"><span class="origin">${({observation:'写真からの観察',interpretation:'AIの解釈',hypothesis:'条件付きの仮説'})[claim.kind]}</span><p>${esc(claim.text)}</p>${claim.conditions.length?`<p class="subtle">${claim.conditions.map(esc).join(' ／ ')}</p>`:''}${claim.evidence.map(e=>evidenceHTML(c,e)).join('')}</div>`).join('')}</section>
     ${h.mechanisms.length?`<section class="detail-section"><h2>どう効いていそうか</h2>${h.mechanisms.map(m=>`<div class="knowledge-item"><p>${esc(m.expression)}</p><p>${esc(m.information_change)} ${esc(m.possible_effect)}</p><p class="subtle">${esc(m.context)} · ${esc(m.limits)}</p></div>`).join('')}</section>`:''}
     ${c.comparisons.length?`<section class="detail-section"><h2>以前のメモとのつながり</h2>${c.comparisons.map(x=>`<div class="comparison"><p>${esc(x.data.shared_structure)}</p><p class="subtle">${esc(x.data.differences)}</p>${x.target_version!==x.target_current_version?'<p class="subtle">比較先は更新されています。旧版に対する比較です。</p>':''}<a href="#" data-compare="${x.target_id}">${esc(x.target_title||'比較したメモ')}を読む</a><p>${esc(x.data.question)}</p></div>`).join('')}</section>`:''}
-    ${proposal?`<section class="draft"><h2>${proposal.adopted_view_id?'自分の漫画観に残しました':proposal.view_id?'漫画観の更新案':'漫画観の案'}</h2><p class="prose">${esc(proposal.data.text)}</p><p class="subtle">${esc(proposal.data.reason)}</p>${proposal.adopted_view_id?`<a href="#" id="adopted-view">漫画観と履歴を読む</a>`:'<button id="adopt" class="primary">自分の漫画観にする</button>'}</section>`:''}
+    ${proposal?`<section class="draft"><h2>${proposal.adopted_view_id?'自分の漫画観に残しました':proposal.view_id?'漫画観の更新案':'漫画観の案'}</h2><p class="prose">${esc(proposal.data.text)}</p><p class="subtle">${esc(proposal.data.reason)}</p>${proposal.adopted_view_id?`<a href="#" id="adopted-view">漫画観と履歴を読む</a>`:`<button id="adopt" class="primary">${proposal.view_id?'この見方に更新':'自分の漫画観にする'}</button>`}</section>`:''}
     ${h.questions.length?`<section class="detail-section"><h2>考えの続き</h2>${h.questions.map(q=>`<p>${esc(q.text)}</p>`).join('')}</section>`:''}
     ${h.uncertainties.length?`<p class="subtle">分析の留保：${h.uncertainties.map(esc).join(' ／ ')}</p>`:''}`:''}
     <details class="fold"><summary>一言・写真・音声を足す</summary><button id="supplement" class="quiet">同じメモに追加する</button></details>
