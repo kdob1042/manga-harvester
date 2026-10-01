@@ -1,4 +1,5 @@
-import {searchCaptures,conceptDetail,organizeConcept} from './discovery.ts';
+import {saveExternal,queueResearch,adoptResearch} from './research.ts';
+import {searchCaptures,semanticSearch,conceptDetail,organizeConcept} from './discovery.ts';
 import {currentReflection,revisit} from './reflection.ts';
 import {Buffer} from 'node:buffer';
 import {HttpError,fail,text,version,jsonBody,stmt,rows,getCapture,now,type Capture,type Harvest,type Asset,type View} from './core.ts';
@@ -49,14 +50,15 @@ async function deleteCapture(request:Request,env:Env,captureId:string){
  const input=await jsonBody(request),base=version(input.version);
  const result=await env.DB.batch([
   stmt(env,`INSERT OR IGNORE INTO retired_requests SELECT m.request_key,m.request_hash,m.capture_id,? FROM mutations m JOIN captures c ON c.id=m.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
+  stmt(env,`INSERT OR IGNORE INTO retired_requests SELECT e.request_key,'external',e.capture_id,? FROM external_sources e JOIN captures c ON c.id=e.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
   stmt(env,`INSERT OR IGNORE INTO capture_tombstones SELECT id,? FROM captures WHERE id=? AND version=?`,now(),captureId,base),
   stmt(env,`INSERT OR IGNORE INTO object_deletions(object_key,created_at) SELECT a.object_key,? FROM assets a JOIN captures c ON c.id=a.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
   stmt(env,'DELETE FROM captures WHERE id=? AND version=?',captureId,base),
-  stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL)'),
+  stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL) AND id NOT IN(SELECT target_id FROM concept_mappings WHERE source_id IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL))'),
   stmt(env,"DELETE FROM settings WHERE key='current_source' AND value IN (SELECT id FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL))"),
   stmt(env,'DELETE FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL)'),
  ]);
- if(!result[3].meta.changes)fail(409,'記録が更新されています。開き直してください。');
+ if(!result[4].meta.changes)fail(409,'記録が更新されています。開き直してください。');
  // Deletion intent is durable even if R2 temporarily fails. Private download routes already stop resolving.
  try{await cleanup(env);}catch{return json({ok:true,originals_pending:true});}return json({ok:true});
 }
@@ -66,8 +68,8 @@ function exportData(env:Env){
  const encoder=new TextEncoder();
  const stream=new ReadableStream<Uint8Array>({async start(controller){
   try{
-   controller.enqueue(encoder.encode(`{"format":"manga-harvester/v2","exported_at":${JSON.stringify(new Date().toISOString())}`));
-   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides','reflections','revisit_events','concept_actions','concept_mappings','concept_aliases']){
+   controller.enqueue(encoder.encode(`{"format":"manga-harvester/v3","exported_at":${JSON.stringify(new Date().toISOString())}`));
+   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides','reflections','revisit_events','concept_actions','concept_mappings','concept_aliases','external_sources','research_runs']){
     controller.enqueue(encoder.encode(`,${JSON.stringify(table)}:[`));let offset=0,first=true;
     while(true){
      const records=await rows<Record<string,unknown>>(env,`SELECT * FROM ${table} ORDER BY rowid LIMIT 50 OFFSET ?`,offset);
@@ -77,6 +79,7 @@ function exportData(env:Env){
        const object=await env.ORIGINALS.get(String(record.object_key));if(!object)throw new Error('export_original_missing');
        record.base64=Buffer.from(await object.arrayBuffer()).toString('base64');delete record.object_key;delete record.request_key;delete record.request_hash;
       }
+      if(table==='external_sources'||table==='research_runs')delete record.request_key;
       if(table==='harvests')record.result=JSON.parse(String(record.result));
       if(table==='view_revisions'){record.references=JSON.parse(String(record.references_json));delete record.references_json;}
       controller.enqueue(encoder.encode(`${first?'':','}${JSON.stringify(record)}`));first=false;
@@ -102,6 +105,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
  if(!path.startsWith('/api/'))return env.ASSETS.fetch(request);
  if(!await loggedIn(request,env))fail(401,'ログインしてください。');
  if(path==='/api/logout'&&method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
+ if(path==='/api/search'&&method==='POST')return json(await semanticSearch(env,text((await jsonBody(request)).query,200)));
  if(path==='/api/state'&&method==='GET'){
   const day=new Date().toISOString().slice(0,10);
   const [captures,views,current,usage,reflection]=await Promise.all([
@@ -111,20 +115,25 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
   ]);
   return json({ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
  }
+ const researchMatch=/^\/api\/research\/([a-f0-9-]{36})\/adopt$/.exec(path);
+ if(researchMatch&&method==='POST')return json(await adoptResearch(request,env,researchMatch[1]));
  const conceptMatch=/^\/api\/concepts\/([a-f0-9-]{36})$/.exec(path);
  if(conceptMatch&&method==='GET')return json(await conceptDetail(env,conceptMatch[1]));
  if(conceptMatch&&method==='POST')return json(await organizeConcept(env,conceptMatch[1],await jsonBody(request)));
  const reflectionMatch=/^\/api\/reflections\/([a-f0-9-]{36})$/.exec(path);
  if(reflectionMatch&&method==='POST'){if(!await revisit(env,reflectionMatch[1],(await jsonBody(request)).action))fail(400,'振り返りが見つかりません。');return json({ok:true});}
+ if(path==='/api/external-sources'&&method==='POST')return json(await saveExternal(request,env),201);
  if(path==='/api/captures'&&method==='POST'){
   const saved=await saveCapture(request,env);ctx.waitUntil(dispatch(env));return saved;
  }
- const match=/^\/api\/captures\/([a-f0-9-]{36})(?:\/(assets|retry|adopt|graph))?$/.exec(path);
+ const match=/^\/api\/captures\/([a-f0-9-]{36})(?:\/(assets|retry|adopt|graph|external-sources|research))?$/.exec(path);
  if(match){
   const [,captureId,action]=match;
   if(!action&&method==='GET'){const c=await getCapture(env,captureId);if(!c)fail(404,'記録が見つかりません。');return json(c);}
   if(!action&&method==='PATCH'){const saved=await editCapture(request,env,captureId);ctx.waitUntil(dispatch(env));return saved;}
   if(!action&&method==='DELETE')return deleteCapture(request,env,captureId);
+  if(action==='external-sources'&&method==='POST')return json(await saveExternal(request,env,captureId),201);
+  if(action==='research'&&method==='POST'){const saved=await queueResearch(request,env,captureId);ctx.waitUntil(dispatch(env));return json(saved,201);}
   if(action==='graph'&&method==='GET'){const graph=await graphFor(env,captureId);if(!graph)fail(404,'記録が見つかりません。');return json(graph);}
   if(action==='assets'&&method==='POST'){const saved=await supplement(request,env,captureId);ctx.waitUntil(dispatch(env));return saved;}
   if(action==='adopt'&&method==='POST')return adopt(request,env,captureId);

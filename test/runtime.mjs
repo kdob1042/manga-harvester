@@ -2,7 +2,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 export function runtime() {
  const sqlite=new DatabaseSync(':memory:');
- for(const f of ['0001_initial.sql','0002_manga.sql','0003_reflections.sql','0004_concepts.sql','0005_sync.sql'])sqlite.exec(readFileSync(new URL(`../migrations/${f}`,import.meta.url),'utf8'));
+ for(const f of ['0001_initial.sql','0002_manga.sql','0003_reflections.sql','0004_concepts.sql','0005_sync.sql','0006_external.sql'])sqlite.exec(readFileSync(new URL(`../migrations/${f}`,import.meta.url),'utf8'));
  class Statement {
   constructor(sql,values=[]){this.sql=sql;this.values=values;}
   bind(...v){return new Statement(this.sql,v);}

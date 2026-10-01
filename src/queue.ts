@@ -1,3 +1,4 @@
+import {dispatchResearch,processResearch} from './research.ts';
 import {contextFor,graphStatements} from './graph.ts';
 import {stmt,rows,getCapture,now,id,type Job} from './core.ts';
 import {transcribe,harvest,AiError} from './ai.ts';
@@ -15,6 +16,7 @@ export async function dispatch(env:Env) {
   try{await env.HARVEST_QUEUE.send({job_id:job.id},{contentType:'json'});}
   catch{await stmt(env,"UPDATE jobs SET dispatched_at=NULL WHERE id=? AND state='pending'",job.id).run();}
  }
+ await dispatchResearch(env);
 }
 
 export async function processJob(env:Env,jobId:string,fetcher?:typeof fetch) {
@@ -75,6 +77,7 @@ export async function consume(batch:MessageBatch<unknown>,env:Env){
   try{
    const body=message.body;
    if(body&&typeof body==='object'&&'job_id' in body&&typeof body.job_id==='string')await processJob(env,body.job_id);
+   if(body&&typeof body==='object'&&'research_id' in body&&typeof body.research_id==='string')await processResearch(env,body.research_id);
    message.ack();
   }
   catch{message.retry({delaySeconds:60});}

@@ -6,8 +6,8 @@ const notice = document.querySelector('#notice');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const date = value => new Intl.DateTimeFormat('ja-JP', { month:'short', day:'numeric', timeZone:'Asia/Tokyo' }).format(new Date(value));
 const $ = selector => document.querySelector(selector);
-let state, currentCapture = null, currentView = null, query = '', recorder = null, stream = null, uploading = false, uploadPending = null;
-let noticeTimer, searchTimer, pollBusy = false;
+let state, currentCapture = null, currentView = null, query = '', semanticQuery = '', recorder = null, stream = null, uploading = false, uploadPending = null;
+let noticeTimer, searchTimer, pollBusy = false, navigation=0;
 const shownReflections = new Set();
 let importController=null, importURLs=[];
 function stopImport(){importController?.abort();importController=null;importURLs.forEach(u=>URL.revokeObjectURL(u));importURLs=[];}
@@ -58,30 +58,31 @@ function header(record = true) {
   return `<header class="top"><div class="brand"><img src="/favicon.svg" alt="">Manga Harvester</div><div class="top-actions">
     ${record ? '<button id="record" class="primary">取り込む<span aria-hidden="true">＋</span></button>' : ''}
     <details class="menu"><summary aria-label="メニュー">···</summary><div class="menu-panel">
-    <label><span>記録を検索</span><input id="search" type="search" placeholder="一言・表現・仕組みから" value="${esc(query)}"></label>
+    <label><span>記録を検索（Enterで意味から探す）</span><input id="search" type="search" placeholder="一言・表現・仕組みから" value="${esc(query)}"></label>
     <button id="privacy">AIと保存について</button><a href="/api/export" download>すべて書き出す</a>
     <button id="logout">閉じる</button></div></details></div></header>`;
 }
 function wireHeader() {
   bind('#record', 'click', () => recordDialog());
   bind('#search', 'input', event => {
-    query = event.target.value;
+    query = event.target.value;semanticQuery='';
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       try { state = await api(`/api/state?q=${encodeURIComponent(query)}`); renderFeed(); }
       catch (error) { showNotice(error.message); }
     }, 300);
   });
+  bind('#search','keydown',async event=>{if(event.key!=='Enter'||!query.trim())return;event.preventDefault();const search=query;$('#feed')?.setAttribute('aria-busy','true');try{const result=await api('/api/search',json('POST',{query:search}));if(search!==query||!$('#feed'))return;state.captures=result.captures;semanticQuery=result.semantic?search:'';renderFeed();showNotice(result.semantic?`直近${result.searched_candidates}件から、根拠付きで関連を探しました。`:'一言・表現の検索結果を表示しました。');}catch(e){showNotice(e.message);}finally{$('#feed')?.removeAttribute('aria-busy');}});
   bind('#privacy', 'click', privacyDialog);
   bind('#logout', 'click', logoutDevice);
 }
 
 async function home() {
-  let next;
+  const turn=++navigation;let next;
   try {next = await api(`/api/state?q=${encodeURIComponent(query)}`);if(!query)await rememberState(next);}
   catch(e){if(e.status)throw e;next=await offlineState();if(!next)throw e;next={...next,offline:true};}
   next.device_pending=await pendingUploads();
-  state = next; currentCapture = null; currentView = null;
+  if(turn!==navigation)return;state = next; currentCapture = null; currentView = null;
   app.innerHTML = `${header()}<section class="intro"><p class="eyebrow">MANGA HARVESTER</p>
     <h1>面白さのメモ。</h1><p>${'写真と一言から、面白さを言葉に。'}</p></section><section id="feed"></section>`;
   app.removeAttribute('aria-busy'); wireHeader(); renderFeed();
@@ -175,9 +176,9 @@ function setMode(mode) { try { localStorage.setItem('capture-mode', mode); } cat
 
 function recordDialog(target = null) {
   uploadPending = null;
-  const mode = ['image','audio','text','import'].includes(getMode()) ? getMode() : 'image';
+  const mode = ['image','audio','text','import','external'].includes(getMode()) ? getMode() : 'image';
   modal(target ? '一言・写真を足す' : '写真と一言を残す', `<label><span>残し方</span><select id="capture-mode" class="capture-mode">
-    <option value="image">写真</option><option value="audio">音声</option><option value="text">一言</option><option value="import">PDF・ZIP/CBZ</option></select></label>
+    <option value="image">写真</option><option value="audio">音声</option><option value="text">一言</option><option value="import">PDF・ZIP/CBZ</option><option value="external">外部資料のURL・引用</option></select></label>
     <div id="capture-body" class="capture-body"></div><p id="capture-error" class="error" role="alert"></p>
     <p class="subtle">${target ? 'いま開いている記録に追加します。' : '保存したら、そのまま読書へ。読み取りは続きます。'}</p>`);
   $('#capture-mode').value = mode;
@@ -224,6 +225,8 @@ function recordDialog(target = null) {
           timer = setTimeout(() => { if (recording.state === 'recording') recording.stop(); }, 120000);
         } catch (error) { $('#capture-error').textContent = error.name === 'NotAllowedError' ? 'マイクが使えません。音声ファイルか、写真・文章を使ってください。' : error.message; }
       });
+    } else if (selected === 'external') {
+      externalInput(target);
     } else if (selected === 'import') {
       importPicker(target);
     } else {
@@ -305,7 +308,7 @@ async function saveUpload(file, text, target, reuse = null, note = '') {
 }
 
 async function openCapture(captureId) {
-  currentCapture = await api(`/api/captures/${captureId}`); currentView = null; renderCapture();
+  const turn=++navigation,fresh=await api(`/api/captures/${captureId}`);if(turn!==navigation)return;currentCapture=fresh;currentView=null;renderCapture();
 }
 function evidenceHTML(c,e) {
   const a=c.assets.find(a=>a.id===e.asset_id);
@@ -325,6 +328,7 @@ function renderCapture() {
     ${proposal?`<section class="draft"><h2>${proposal.adopted_view_id?'自分の漫画観に残しました':proposal.view_id?'漫画観の更新案':'漫画観の案'}</h2><p class="prose">${esc(proposal.data.text)}</p><p class="subtle">${esc(proposal.data.reason)}</p>${proposal.adopted_view_id?`<a href="#" id="adopted-view">漫画観と履歴を読む</a>`:`<button id="adopt" class="primary">${proposal.view_id?'この見方に更新':'自分の漫画観にする'}</button>`}</section>`:''}
     ${h.questions.length?`<section class="detail-section"><h2>考えの続き</h2>${h.questions.map(q=>`<p>${esc(q.text)}</p>`).join('')}</section>`:''}
     ${h.uncertainties.length?`<p class="subtle">分析の留保：${h.uncertainties.map(esc).join(' ／ ')}</p>`:''}`:''}
+    ${externalHTML(c)}
     <details id="local-graph" class="fold"><summary>このメモのつながりを読む</summary><div id="graph-body"></div></details>
     <details class="fold"><summary>一言・写真・音声を足す</summary><button id="supplement" class="quiet">同じメモに追加する</button></details>
     <details class="fold"><summary>原資料・訂正など</summary>
@@ -332,6 +336,7 @@ function renderCapture() {
     ${h?.extracted_text?`<p class="prose">${esc(h.extracted_text)}</p>`:''}<div class="secondary-links"><button id="correct">一言・作品名を訂正</button><button id="retry">もう一度分析</button><button id="delete" class="danger">このメモを削除</button></div>
     ${h?.concepts.length?`<p class="concepts">${h.concepts.map(k=>esc(k.name)).join(' · ')}</p>`:''}</details></article>`;
   wireHeader();bind('#back','click',()=>home().catch(e=>showNotice(e.message)));
+  wireExternal(c);
   bind('#local-graph','toggle',()=>{if($('#local-graph').open&&!$('#graph-body').innerHTML)renderGraph(c.id).catch(e=>showNotice(e.message));});
   bind('#supplement','click',()=>recordDialog(c));
   document.querySelectorAll('[data-compare]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();openCapture(a.dataset.compare).catch(e=>showNotice(e.message));}));
@@ -362,7 +367,7 @@ function renderCapture() {
   });
 }
 async function openView(viewId) {
-  const v = await api(`/api/views/${viewId}`); currentView = v; currentCapture = null;
+  const turn=++navigation,v = await api(`/api/views/${viewId}`);if(turn!==navigation)return;currentView = v; currentCapture = null;
   app.innerHTML = `${header(false)}<button id="back" class="back">← 面白さのメモ</button><article>
     <div class="detail-head"><p class="eyebrow">自分の漫画観 · 第${v.version}版</p><h1 class="prose">${esc(v.body)}</h1></div>
     <section class="detail-section"><h2>この見方の根拠</h2><p>${esc(v.revisions[0].references.source_title || '残した資料')}${''}</p>
@@ -387,6 +392,36 @@ async function openView(viewId) {
       catch (e) { $('#restore-error').textContent = e.message; }
     });
   }));
+}
+
+const sourceTypes={author_statement:'作者の発言',editor_statement:'編集者の発言',criticism:'批評',research:'研究',review:'レビュー',unknown:'種別未確認'};
+function externalInput(target){
+  $('#capture-body').innerHTML=`<form id="external-form"><label><span>公開資料のURL</span><input id="external-url" type="url" required placeholder="https://…"></label><label><span>引用・抜き書き（任意）</span><textarea id="external-quote" maxlength="5000"></textarea></label><label><span>どの表現・問いに関する資料？</span><input id="external-scope" required maxlength="2000"></label>
+    <details class="fold"><summary>資料名・発言者などを補足</summary><label><span>資料名</span><input id="external-title" maxlength="500"></label><label><span>資料の種別</span><select id="external-type">${Object.entries(sourceTypes).map(([key,label])=>`<option value="${key}" ${key==='unknown'?'selected':''}>${label}</option>`).join('')}</select></label><label><span>発言者</span><input id="external-speaker" maxlength="300"></label><label><span>公開日</span><input id="external-date" type="date"></label></details><button class="primary">資料を残す</button><p class="subtle">URLと抜き書きを保存します。本文の取得・確認や検索は自動で行いません。</p></form>`;
+  const key=crypto.randomUUID();bind('#external-form','submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;
+    try{const saved=await api(target?`/api/captures/${target.id}/external-sources`:'/api/external-sources',{...json('POST',{url:$('#external-url').value,quote:$('#external-quote').value,scope:$('#external-scope').value,title:$('#external-title').value,source_type:$('#external-type').value,speaker:$('#external-speaker').value,published_at:$('#external-date').value}),headers:{'Content-Type':'application/json','Idempotency-Key':key}});closeDialog();await openCapture(saved.capture_id);}
+    catch(e){$('#capture-error').textContent=e.message;button.disabled=false;}
+  });
+}
+function externalHTML(c){
+  return `<details class="fold" id="external-materials"><summary>外部資料と照合する${c.external_sources.length?` · ${c.external_sources.length}件`:''}</summary>
+    ${c.external_sources.map(s=>`<div class="knowledge-item"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title||s.url)}</a><span class="origin">${esc(sourceTypes[s.source_type])} · 本人が提供、本文未確認</span>${s.quote?`<blockquote>${esc(s.quote)}</blockquote>`:''}<p class="subtle">${esc(s.scope)} · ${esc(s.speaker||'発言者未確認')} · ${esc(s.published_at||'公開日未確認')}<br>${date(s.received_at)}に記録</p></div>`).join('')}
+    <button id="add-external" class="quiet">URL・引用を残す</button><button id="start-research" class="quiet">この問いを公開資料で調べる</button>
+    ${(c.research||[]).map(r=>`<div class="knowledge-item"><p>${esc(r.question)}</p><span class="origin">外部資料の調査 · ${esc(({pending:'検索待ち',running:'調査中',blocked:'設定・利用上限待ち',failed:'調査できませんでした',superseded:'更新前のメモへの調査',completed:'調査結果'})[r.state]||r.state)}</span>
+      ${r.result?`<p>${esc(r.result.summary)}</p>${r.result.evidence.map(e=>`<p>${esc(e.text)} <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">出典</a><br><span class="subtle">${esc(sourceTypes[e.source_type])} · ${esc(e.speaker||'発言者未確認')} · ${esc(e.published_at||'公開日未確認')}<br>対象：${esc(e.scope)}<br>限界：${esc(e.limitations)} · 同一発言の扱い：${esc(e.independence_group)}</span></p>`).join('')}
+      ${r.result.alternatives.map(a=>`<p class="subtle">別解釈：${esc(a)}</p>`).join('')}${r.result.unanswered.map(a=>`<p class="subtle">未確認：${esc(a)}</p>`).join('')}
+      ${r.result.proposal?`<p>${esc(r.result.proposal.text)}</p><p class="subtle">${esc(r.result.proposal.reason)} · ${esc(r.result.proposal.limits)}</p>${r.adopted_revision?'<p class="subtle">この案は漫画観へ採用済みです。</p>':r.state==='completed'?`<button class="quiet" data-adopt-research="${r.id}">この外部根拠を踏まえた案に更新する</button>`:''}`:''}`:''}
+      ${r.search?`<details class="fold"><summary>検索時の回答と参照先</summary><p class="prose">${esc(r.search.text)}</p>${r.search.citations.map(s=>`<p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></p>`).join('')}<p class="subtle">${date(r.search.retrieved_at)}に取得</p></details>`:''}</div>`).join('')}</details>`;
+}
+function wireExternal(c){
+  bind('#add-external','click',()=>{recordDialog(c);$('#capture-mode').value='external';$('#capture-mode').dispatchEvent(new Event('change'));});
+  bind('#start-research','click',()=>{
+    modal('問いを公開資料で調べる',`<form id="research-form"><label><span>公開情報だけで表した、調べたい問い</span><textarea id="research-question" required maxlength="500">${esc(c.harvest?.questions[0]?.text||'')}</textarea></label><label><span>検討する漫画観（任意）</span><select id="research-view"><option value="">外部根拠だけ残す</option>${state.views.map(v=>`<option value="${v.id}">${esc(v.body.slice(0,100))}</option>`).join('')}</select></label><p class="subtle">この問いだけで外部検索します。写真や過去メモは検索先へ送りません。整理には選んだ漫画観をOpenAIへ送ります。1日3件、1件最大2回の検索。利用料金が発生します。</p><p id="research-error" class="error"></p><button class="primary">この問いで調べる</button></form>`);
+    const key=crypto.randomUUID();bind('#research-form','submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;
+      try{await api(`/api/captures/${c.id}/research`,{...json('POST',{question:$('#research-question').value,view_id:$('#research-view').value||null,version:c.version}),headers:{'Content-Type':'application/json','Idempotency-Key':key}});closeDialog();await openCapture(c.id);showNotice('調査を受け付けました。結果はこのメモに残します。');}catch(e){$('#research-error').textContent=e.message;button.disabled=false;}
+    });
+  });
+  document.querySelectorAll('[data-adopt-research]').forEach(el=>el.addEventListener('click',async()=>{try{const r=c.research.find(r=>r.id===el.dataset.adoptResearch),saved=await api(`/api/research/${r.id}/adopt`,json('POST',{version:r.base_revision}));await openView(saved.id);}catch(e){showNotice(e.message);}}));
 }
 
 async function renderGraph(captureId) {
@@ -424,14 +459,14 @@ setInterval(async () => {
   if (!state || document.hidden || dialog.open || uploading || pollBusy) return;
   pollBusy = true;
   try {
-    if (currentCapture && ['pending','running','blocked'].includes(currentCapture.job?.state)) {
+    if (currentCapture && (['pending','running','blocked'].includes(currentCapture.job?.state)||(currentCapture.research||[]).some(r=>['pending','running','blocked'].includes(r.state)))) {
       if (!app.querySelector('details[open]')) {
         const fresh = await api(`/api/captures/${currentCapture.id}`);
-        if (fresh.job?.state !== currentCapture.job?.state || fresh.version !== currentCapture.version) { currentCapture = fresh; renderCapture(); }
+        if (fresh.job?.state !== currentCapture.job?.state || fresh.version !== currentCapture.version || JSON.stringify(fresh.research)!==JSON.stringify(currentCapture.research)) { currentCapture = fresh; renderCapture(); }
       }
     } else if (!currentCapture && !currentView) {
       const completed=await syncUploads(api,state.instance_id);if(!state)return;
-      state = await api(`/api/state?q=${encodeURIComponent(query)}`);if(!query)await rememberState(state);state.device_pending=await pendingUploads();renderFeed();if(completed.length)showNotice('端末のメモを同期しました。分析はあとで読めます。');
+      const freshState=await api(`/api/state?q=${encodeURIComponent(query)}`);if(semanticQuery===query&&query)freshState.captures=state.captures;state=freshState;if(!query)await rememberState(state);state.device_pending=await pendingUploads();renderFeed();if(completed.length)showNotice('端末のメモを同期しました。分析はあとで読めます。');
     }
   } catch (e) { if (e.status !== 401) { /* Preserve the last readable page during a temporary outage. */ } }
   finally { pollBusy = false; }
@@ -461,5 +496,5 @@ document.addEventListener('drop',event=>{
   }
 });
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
-window.addEventListener('online',()=>{if(state)home().then(()=>syncUploads(api,state.instance_id)).then(()=>home()).catch(e=>showNotice(e.message));});
+window.addEventListener('online',async()=>{if(!state)return;try{const fresh=await api('/api/state');await rememberState(fresh);await syncUploads(api,fresh.instance_id);if(!currentCapture&&!currentView&&!dialog.open)await home();}catch(e){showNotice(e.message);}});
 home().catch(error => { if (error.status !== 401) { app.innerHTML = '<p class="loading">接続を確認して、画面を開き直してください。</p>'; } });

@@ -25,3 +25,12 @@ jobs:
         with:
           name: browser-qa
           path: artifacts/
+  ios-compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+        working-directory: ios
+      - run: xcodebuild -project MangaHarvester.xcodeproj -scheme MangaHarvester -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+        working-directory: ios

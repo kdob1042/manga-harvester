@@ -1,3 +1,5 @@
+import {processResearch} from '../src/research.ts';
+import {researchProvider} from '../test/research-fixtures.mjs';
 import {cbz,pdfFixture} from '../test/import-fixtures.mjs';
 // Real UI + API + SQLite storage + queue consumer. The provider response is injected,
 // so this check never claims to verify actual model quality or incur API costs.
@@ -14,7 +16,7 @@ f.env.ASSETS.fetch=async r=>{
  return new Response(await readFile(new URL(`../public/${file}`,import.meta.url)),{headers:{'Content-Type':file.endsWith('.mjs')||file.endsWith('.js')?'text/javascript':({'index.html':'text/html','style.css':'text/css','favicon.svg':'image/svg+xml'})[file]||'application/octet-stream'}});
 };
 let draining=false;
-async function drain(){if(draining)return;draining=true;try{while(f.sent.length){const {job_id}=f.sent.shift();await processJob(f.env,job_id,provider(x=>{
+async function drain(){if(draining)return;draining=true;try{while(f.sent.length){const {job_id,research_id}=f.sent.shift();if(research_id){await processResearch(f.env,research_id,researchProvider());continue;}await processJob(f.env,job_id,provider(x=>{
  const h=fixture(x.asset_labels[0]?.id,x.user_note||x.original_or_corrected_text);
  if(!x.asset_labels.some(a=>a.mime.startsWith('image/')))h.claims.forEach(c=>c.evidence=[{asset_id:null,quote:x.original_or_corrected_text,origin:'user',certainty:'explicit'}]);
  if(x.candidates.length){h.comparisons=[{target_id:x.candidates[0].id,kind:'shares_structure_with',shared_structure:'反応を先に提示する仕組みが共通している。',differences:'緊張と笑いでは、対象を明かした後の効果が異なる。',question:'どこから笑いに変わるのか？',claim_ids:['c1'],target_claim_ids:['c1']}];h.concepts[0].existing_id=x.concepts[0]?.id||null;}
@@ -87,7 +89,13 @@ try{
  await expect.poll(()=>f.sqlite.prepare('SELECT count(*) n FROM captures').get().n).toBe(6);
  await expect(page.locator('.device-pending')).toHaveCount(0,{timeout:15000});assertNoOverflow(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth));
  if(f.sqlite.prepare('SELECT count(*) n FROM jobs').get().n!==6)throw new Error('Duplicate analysis jobs after replay');
- await page.screenshot({path:'artifacts/desktop-reflection.png',fullPage:true});
+ await expect(page.locator('.capture-row')).toHaveCount(6);await page.screenshot({path:'artifacts/desktop-reflection.png',fullPage:true});
+ await page.locator('.capture-row').first().click();await page.locator('#local-graph summary').click();await expect(page.locator('.graph-node')).toHaveCount(5);
+ await page.locator('[data-concept]').first().click();await expect(page.getByRole('dialog')).toBeVisible();await page.locator('#close-dialog').click();
+ await page.locator('#external-materials summary').first().click();await page.locator('#start-research').click();await page.locator('#research-question').fill('公開資料による反応先行の別解釈');
+ await page.locator('#research-view').selectOption({index:1});await page.locator('#research-form button').click();await expect(page.getByRole('dialog')).not.toBeVisible();
+ await page.reload();await page.locator('.capture-row').first().click();await page.locator('#external-materials summary').first().click();
+ await expect(page.locator('[data-adopt-research]')).toBeVisible();await page.locator('[data-adopt-research]').click();await expect(page.getByText('自分の漫画観 · 第4版',{exact:true})).toBeVisible();
  if(errors.length)throw new Error(errors.join('\n'));
  console.log('Browser QA passed: 390/1280px, one primary action, multi-photo + comment, paste, save/reload, original images, comparison, adoption/edit/history, microphone fallback, no overflow.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));f.sqlite.close();}
