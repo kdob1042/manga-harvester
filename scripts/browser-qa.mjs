@@ -1,3 +1,4 @@
+import {cbz,pdfFixture} from '../test/import-fixtures.mjs';
 // Real UI + API + SQLite storage + queue consumer. The provider response is injected,
 // so this check never claims to verify actual model quality or incur API costs.
 import {createServer} from 'node:http';
@@ -9,8 +10,8 @@ import {runtime,fixture,provider,png} from '../test/runtime.mjs';
 const f=runtime(),origin='http://localhost:8793';f.env.APP_ORIGIN=origin;
 f.env.ASSETS.fetch=async r=>{
  const pathname=new URL(r.url).pathname,file=pathname==='/'?'index.html':pathname.slice(1);
- if(!['index.html','app.js','style.css','favicon.svg'].includes(file))return new Response('missing',{status:404});
- return new Response(await readFile(new URL(`../public/${file}`,import.meta.url)),{headers:{'Content-Type':({'index.html':'text/html','app.js':'text/javascript','style.css':'text/css','favicon.svg':'image/svg+xml'})[file]}});
+ if(file.includes('..')||!['index.html','app.js','style.css','favicon.svg','local.js','import.js','offline.js','sw.js','manifest.webmanifest'].includes(file)&&!file.startsWith('vendor/'))return new Response('missing',{status:404});
+ return new Response(await readFile(new URL(`../public/${file}`,import.meta.url)),{headers:{'Content-Type':file.endsWith('.mjs')||file.endsWith('.js')?'text/javascript':({'index.html':'text/html','style.css':'text/css','favicon.svg':'image/svg+xml'})[file]||'application/octet-stream'}});
 };
 let draining=false;
 async function drain(){if(draining)return;draining=true;try{while(f.sent.length){const {job_id}=f.sent.shift();await processJob(f.env,job_id,provider(x=>{
@@ -60,6 +61,33 @@ try{
  await page.getByRole('button',{name:'この見方に更新',exact:true}).click();await expect(page.getByText('自分の漫画観 · 第3版',{exact:true})).toBeVisible();
  await page.locator('#back').click();await page.screenshot({path:'artifacts/desktop-feed.png',fullPage:true});await expect(page.locator('.primary:visible')).toHaveCount(1);
  await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('audio');await page.locator('#record-audio').click();await expect(page.locator('#capture-error')).not.toBeEmpty();await page.getByText('音声ファイルから残す',{exact:true}).click();await expect(page.locator('#audio-file')).toBeVisible();
+ await page.locator('#close-dialog').click();
+ await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('import');
+ await page.locator('#import-file').setInputFiles({name:'photos.cbz',mimeType:'application/zip',buffer:Buffer.from(cbz)});
+ await expect(page.locator('.import-grid img')).toHaveCount(2);await page.locator('[data-import-key]').first().check();
+ await page.locator('#save-import').click();await expect(page.getByRole('dialog')).not.toBeVisible();await page.reload();await expect(page.locator('.capture-row')).toHaveCount(3);
+ await page.locator('.capture-row').first().click();await expect(page.locator('.photo-strip img')).toHaveCount(1);await page.locator('#back').click();
+ await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('import');
+ await page.locator('#import-file').setInputFiles({name:'shapes.pdf',mimeType:'application/pdf',buffer:pdfFixture()});
+ await expect(page.locator('.import-grid img')).toHaveCount(2).catch(async e=>{console.error('PDF import:',await page.locator('#capture-error').innerText());throw e;});await page.locator('[data-import-key]').last().check();
+ await page.locator('#save-import').click();await expect(page.getByRole('dialog')).not.toBeVisible();await page.reload();await expect(page.locator('.capture-row')).toHaveCount(4);
+ await page.locator('.capture-row').first().click();await expect(page.locator('.photo-strip img')).toHaveCount(1);
+ await page.locator('#back').click();
+ await page.evaluate(()=>navigator.serviceWorker.ready);await expect.poll(()=>page.evaluate(()=>Boolean(navigator.serviceWorker.controller))).toBeTruthy();
+ await page.context().setOffline(true);await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('image');
+ await page.locator('#image-note').fill('圏外で残す、この反応が好き');await page.locator('#image-file').setInputFiles({name:'offline.png',mimeType:'image/png',buffer:png});
+ await expect(page.getByRole('dialog')).not.toBeVisible();await expect(page.locator('.device-pending')).toHaveCount(1);
+ await page.reload();await expect(page.locator('.device-pending')).toHaveCount(1);await expect(page.getByText('圏外 · 新しいメモは端末内に残します。',{exact:true})).toBeVisible();
+ await page.context().setOffline(false);await expect(page.locator('.device-pending')).toHaveCount(0,{timeout:15000});await expect(page.locator('.capture-row')).toHaveCount(5);
+ // The server accepted the original; only the response is lost. Automatic
+ // replay must not create a second capture or a second analysis job.
+ await page.route('**/api/captures',async route=>{await route.fetch();await route.abort();},{times:1});
+ await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#image-note').fill('通信応答だけ失われたメモ');
+ await page.locator('#image-file').setInputFiles({name:'lost-response.png',mimeType:'image/png',buffer:png});await expect(page.getByRole('dialog')).not.toBeVisible();
+ await expect.poll(()=>f.sqlite.prepare('SELECT count(*) n FROM captures').get().n).toBe(6);
+ await expect(page.locator('.device-pending')).toHaveCount(0,{timeout:15000});assertNoOverflow(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth));
+ if(f.sqlite.prepare('SELECT count(*) n FROM jobs').get().n!==6)throw new Error('Duplicate analysis jobs after replay');
+ await page.screenshot({path:'artifacts/desktop-reflection.png',fullPage:true});
  if(errors.length)throw new Error(errors.join('\n'));
  console.log('Browser QA passed: 390/1280px, one primary action, multi-photo + comment, paste, save/reload, original images, comparison, adoption/edit/history, microphone fallback, no overflow.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));f.sqlite.close();}

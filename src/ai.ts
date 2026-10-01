@@ -51,7 +51,7 @@ export async function harvest(env:Env,capture:Capture,assets:Asset[],transcript:
  const data=await call(env,capture.id,'responses',env.OPENAI_MODEL,{
   model:env.OPENAI_MODEL,store:false,instructions:harvestInstructions,
   input:[{role:'user',content}],max_output_tokens:Number(env.AI_MAX_OUTPUT_TOKENS),
-  text:{format:{type:'json_schema',name:'manga_harvest_v2',strict:true,schema:harvestSchema}},
+  text:{format:{type:'json_schema',name:'manga_harvest_v3',strict:true,schema:harvestSchema}},
  },fetcher);
  if(data.status==='incomplete')throw new AiError('incomplete_output');
  const blocks=(data.output||[]).flatMap(o=>o.content||[]);

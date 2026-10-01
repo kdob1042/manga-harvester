@@ -3,7 +3,8 @@ import {captureInput,requestKey,stageAssets,MAX_ASSETS,MAX_SCENE,type Input} fro
 const json=(v:unknown,status=200)=>Response.json(v,{status});
 async function duplicate(env:Env,key:string,hash:string,target?:string){
  const prior=await stmt(env,'SELECT capture_id,request_hash FROM mutations WHERE request_key=?',key).first<{capture_id:string;request_hash:string}>();
- if(!prior)return null;if(prior.request_hash!==hash||target&&prior.capture_id!==target)fail(409,'同じ保存操作の内容が変わっています。');return json({id:prior.capture_id,duplicate:true});
+ if(!prior){if(await stmt(env,'SELECT 1 FROM retired_requests WHERE request_key=?',key).first())fail(410,'この保存操作の記録は削除済みです。再送では復元できません。');return null;}
+ if(prior.request_hash!==hash||target&&prior.capture_id!==target)fail(409,'同じ保存操作の内容が変わっています。');return json({id:prior.capture_id,duplicate:true});
 }
 function assetsSQL(env:Env,captureId:string,input:Input,keys:string[],mutation:string,start:number){
  const sql:D1PreparedStatement[]=[];

@@ -1,3 +1,5 @@
+import {rememberState,offlineState,lockDevice,pendingFailure,pendingUploads,queueUpload,sendUpload,syncUploads,removePending,retryPending,downloadLocal,forgetDevice} from './offline.js';
+import {openImport,selectImport,importFiles,finishImport,pendingImports,removeImport} from './import.js';
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
 const notice = document.querySelector('#notice');
@@ -6,6 +8,9 @@ const date = value => new Intl.DateTimeFormat('ja-JP', { month:'short', day:'num
 const $ = selector => document.querySelector(selector);
 let state, currentCapture = null, currentView = null, query = '', recorder = null, stream = null, uploading = false, uploadPending = null;
 let noticeTimer, searchTimer, pollBusy = false;
+const shownReflections = new Set();
+let importController=null, importURLs=[];
+function stopImport(){importController?.abort();importController=null;importURLs.forEach(u=>URL.revokeObjectURL(u));importURLs=[];}
 const errors = {
   ai_not_configured:'原資料は保存済みです。AI設定後に自動で読み取ります。',
   daily_limit:'原資料は保存済みです。今日の解析上限に達しました。明日、自動で続けます。',
@@ -28,7 +33,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data.error || '通信を確認して、もう一度お試しください。');
     error.status = response.status;
-    if (response.status === 401 && path !== '/api/login') { closeDialog(); login(); }
+    if (response.status === 401 && path !== '/api/login') { await lockDevice(); closeDialog(); login(); }
     throw error;
   }
   return data;
@@ -53,7 +58,7 @@ function header(record = true) {
   return `<header class="top"><div class="brand"><img src="/favicon.svg" alt="">Manga Harvester</div><div class="top-actions">
     ${record ? '<button id="record" class="primary">取り込む<span aria-hidden="true">＋</span></button>' : ''}
     <details class="menu"><summary aria-label="メニュー">···</summary><div class="menu-panel">
-    <label><span>記録を検索</span><input id="search" type="search" placeholder="曖昧な言葉でも" value="${esc(query)}"></label>
+    <label><span>記録を検索</span><input id="search" type="search" placeholder="一言・表現・仕組みから" value="${esc(query)}"></label>
     <button id="privacy">AIと保存について</button><a href="/api/export" download>すべて書き出す</a>
     <button id="logout">閉じる</button></div></details></div></header>`;
 }
@@ -68,11 +73,14 @@ function wireHeader() {
     }, 300);
   });
   bind('#privacy', 'click', privacyDialog);
-  bind('#logout', 'click', async () => { try { await api('/api/logout', json('POST', {})); login(); } catch (e) { showNotice(e.message); } });
+  bind('#logout', 'click', logoutDevice);
 }
 
 async function home() {
-  const next = await api(`/api/state?q=${encodeURIComponent(query)}`);
+  let next;
+  try {next = await api(`/api/state?q=${encodeURIComponent(query)}`);if(!query)await rememberState(next);}
+  catch(e){if(e.status)throw e;next=await offlineState();if(!next)throw e;next={...next,offline:true};}
+  next.device_pending=await pendingUploads();
   state = next; currentCapture = null; currentView = null;
   app.innerHTML = `${header()}<section class="intro"><p class="eyebrow">MANGA HARVESTER</p>
     <h1>面白さのメモ。</h1><p>${'写真と一言から、面白さを言葉に。'}</p></section><section id="feed"></section>`;
@@ -81,15 +89,69 @@ async function home() {
 function renderFeed() {
   if (!$('#feed')) return;
   const captures = state.captures;
-  $('#feed').innerHTML = `${captures.length ? '<p class="section-label">写真から育った知見</p>' : ''}${captures.map(c => {
+  $('#feed').innerHTML = `${pendingHTML()}${reflectionHTML()}${captures.length ? '<p class="section-label">写真から育った知見</p>' : ''}${captures.map(c => {
     const summary = c.harvest?.summary || c.original_preview || (c.kind === 'scene' ? '残した写真・音声' : '残した一言');
     const label = statusLabel(c);
     return `<button class="capture-row" data-capture="${c.id}"><span class="row-meta"><span>${c.source_certainty === 'inferred' ? '推定 ' : ''}${esc(c.source_title || '作品名なし')}${c.source_inherited ? '（直前の作品）' : ''}</span><span>${date(c.created_at)}</span></span>
-      <h2>${esc(summary)}</h2>${label ? `<span class="status ${esc(c.state)}">${esc(label)}</span>` : `<p class="question-preview">${esc(c.harvest?.questions[0]?.text || '原資料と、考えの続きを読む。')}</p>`}</button>`;
+      <h2>${esc(summary)}</h2>${c.search_reason?`<p class="subtle">${esc(c.search_reason)}：${esc(c.search_evidence)}</p>`:''}${label ? `<span class="status ${esc(c.state)}">${esc(label)}</span>` : `<p class="question-preview">${esc(c.harvest?.questions[0]?.text || '原資料と、考えの続きを読む。')}</p>`}</button>`;
   }).join('')}${!captures.length ? `<div class="empty"><img class="empty-symbol" src="/favicon.svg" alt=""><h2>${query ? 'その言葉は、まだ見つかりません。' : '最初の一枚から、育っていきます。'}</h2><p>${query ? '別の言葉で探してみてください。' : '写真と、どこがどう面白いかの一言から。'}</p></div>` : ''}
     ${state.views.length && !query ? `<p class="section-label">自分の漫画観</p>${state.views.map(v => `<button class="view-row" data-view="${v.id}"><span class="row-meta">自分の漫画観 · 第${v.version}版</span><h2>${esc(v.body)}</h2></button>`).join('')}` : ''}`;
+  wirePending();wireReflection();
   document.querySelectorAll('[data-capture]').forEach(el => el.addEventListener('click', () => openCapture(el.dataset.capture).catch(e => showNotice(e.message))));
   document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => openView(el.dataset.view).catch(e => showNotice(e.message))));
+}
+
+function pendingHTML() {
+  return `${state.offline?'<p class="status">圏外 · 新しいメモは端末内に残します。</p>':''}${(state.device_pending||[]).map(p=>`<button class="capture-row device-pending" data-pending="${p.id}"><span class="row-meta">端末内保存 · ${p.error?'送信の確認が必要':'接続後に送信待ち'}</span><h2>${esc(p.note||p.text||'残した写真・音声')}</h2>${p.error?`<p class="subtle">${esc(p.error.message)}</p>`:''}</button>`).join('')}`;
+}
+function wirePending(){document.querySelectorAll('[data-pending]').forEach(el=>el.addEventListener('click',()=>pendingDialog(el.dataset.pending).catch(e=>showNotice(e.message))));}
+async function pendingDialog(id){
+  const p=(await pendingUploads()).find(p=>p.id===id);if(!p)return;
+  stopImport();const urls=p.files.map(f=>({url:URL.createObjectURL(f),mime:f.type}));importURLs=urls.map(f=>f.url);
+  modal('端末内に残したメモ',`<p>${esc(p.note||p.text||'')}</p><div class="photo-strip">${urls.filter(f=>f.mime.startsWith('image/')).map(f=>`<img src="${f.url}" alt="送信待ちの写真">`).join('')}</div>${urls.filter(f=>f.mime.startsWith('audio/')).map(f=>`<audio controls src="${f.url}"></audio>`).join('')}
+    <p class="subtle">${esc(p.error?.message||'接続が戻ると、同じ保存操作として一度だけ送信します。')}<br>サーバー保存・AI分析はまだ完了していません。</p>
+    ${p.error?.status===409&&p.target?'<button id="rebase-pending" class="quiet">最新の記録を確認して追記する</button>':''}
+    <button id="export-local" class="quiet">端末内の原資料を書き出す</button><details class="fold"><summary>この送信待ちを削除する</summary><p>端末内の写真・音声・文章を削除します。</p><button id="remove-pending" class="quiet">この端末から削除する</button></details>`);
+  bind('#export-local','click',()=>downloadLocal().catch(e=>showNotice(e.message)));
+  bind('#remove-pending','click',async()=>{await removePending(p.id);closeDialog();await home();});
+  bind('#rebase-pending','click',async()=>{
+    try{const fresh=await api(`/api/captures/${p.target.id}`);modal('追記先の現在の内容',`<p>${esc(fresh.note||fresh.original_text||fresh.harvest?.summary||'写真のメモ')}</p><p>第${p.target.version}版から第${fresh.version}版に更新されています。端末内の一言と写真を、この内容に追記します。</p><button id="confirm-rebase" class="primary">この内容に追記する</button>`);
+      bind('#confirm-rebase','click',async()=>{await retryPending(p.id,fresh);await syncUploads(api,state.instance_id);closeDialog();await home();});
+    }catch(e){showNotice(e.message);}
+  });
+}
+async function logoutDevice(){
+  const pending=await pendingUploads(),imports=await pendingImports();
+  const finish=async()=>{
+    // Revoke the server session before clearing local data. Offline logout is
+    // deferred rather than leaving an authenticated cookie that reopens later.
+    try{await api('/api/logout',json('POST',{}));await forgetDevice();closeDialog();login();}catch(e){showNotice('接続してから閉じてください。端末内のメモは残っています。');}
+  };
+  if(pending.length||imports.length){
+    modal('保存待ちのメモがあります',`<p>送信待ち${pending.length}件、変換候補${imports.length}件が端末内に残っています。閉じると、この端末の原資料を削除します。</p><button id="logout-export" class="quiet">先に端末内の原資料を書き出す</button><button id="logout-discard" class="primary">端末内のデータを削除して閉じる</button>`);
+    bind('#logout-export','click',()=>downloadLocal().catch(e=>showNotice(e.message)));bind('#logout-discard','click',finish);
+  }else await finish();
+}
+
+function reflectionHTML() {
+  const r = !query && state.reflection;
+  if (!r) return '';
+  const x = r.data.comparison;
+  return `<aside class="reflection"><div class="reflection-head"><p class="section-label">あとで、考えの続きを</p><button id="dismiss-reflection" class="quiet" aria-label="この振り返りを見送る">×</button></div>
+    ${r.data.user_words.length ? `<blockquote>${r.data.user_words.map(esc).join(' ／ ')}</blockquote>` : ''}
+    <p>${esc(x.shared_structure)}</p><p class="subtle">${esc(x.differences)}</p>
+    ${r.data.target_words.length ? `<p class="subtle">以前の自分の一言：${r.data.target_words.map(esc).join(' ／ ')}</p>` : '<p class="subtle">以前のメモへの好き・嫌いは、まだ不明です。</p>'}
+    <p>${esc(x.question)}</p>${(r.data.counterfactuals || []).map(f => `<details class="fold"><summary>もし変えるなら（仮想比較）</summary><p>${esc(f.change)}</p><p>${esc(f.possible_effect)}</p><p class="subtle">未実験の仮説 · ${esc(f.limits)}</p></details>`).join('')}
+    <a href="#" id="revisit-record">以前の写真と一言へ戻る</a> · <a href="#" id="reflection-record">今回のメモを読む</a>
+    ${r.changes.map(v => `<p class="subtle">漫画観は第${v.version}版へ：${esc(v.reason)}</p>`).join('')}</aside>`;
+}
+function wireReflection() {
+  const r = !query && state.reflection;
+  if (!r) return;
+  if (!shownReflections.has(r.id)) { shownReflections.add(r.id); api(`/api/reflections/${r.id}`, json('POST', {action:'shown'})).catch(() => shownReflections.delete(r.id)); }
+  bind('#dismiss-reflection','click',async () => { try { await api(`/api/reflections/${r.id}`, json('POST',{action:'dismissed'})); state.reflection=null; renderFeed(); } catch(e) { showNotice(e.message); } });
+  bind('#revisit-record','click',async e => {e.preventDefault();try {await api(`/api/reflections/${r.id}`, json('POST',{action:'opened'}));await openCapture(r.target_id);}catch(e){showNotice(e.message);}});
+  bind('#reflection-record','click',e => {e.preventDefault();openCapture(r.capture_id).catch(e=>showNotice(e.message));});
 }
 
 function modal(title, body) {
@@ -104,23 +166,23 @@ function stopRecorder() {
 }
 function closeDialog() {
   if (uploading) return;
-  stopRecorder(); dialog.close();
+  stopRecorder(); stopImport(); dialog.close();
 }
-dialog.addEventListener('cancel', event => { if (uploading) event.preventDefault(); else stopRecorder(); });
+dialog.addEventListener('cancel', event => { if (uploading) event.preventDefault(); else {stopRecorder();stopImport();} });
 
 function getMode() { try { return localStorage.getItem('capture-mode') || 'image'; } catch { return 'image'; } }
 function setMode(mode) { try { localStorage.setItem('capture-mode', mode); } catch { /* device preferences are optional */ } }
 
 function recordDialog(target = null) {
   uploadPending = null;
-  const mode = ['image','audio','text'].includes(getMode()) ? getMode() : 'image';
+  const mode = ['image','audio','text','import'].includes(getMode()) ? getMode() : 'image';
   modal(target ? '一言・写真を足す' : '写真と一言を残す', `<label><span>残し方</span><select id="capture-mode" class="capture-mode">
-    <option value="image">写真</option><option value="audio">音声</option><option value="text">一言</option></select></label>
+    <option value="image">写真</option><option value="audio">音声</option><option value="text">一言</option><option value="import">PDF・ZIP/CBZ</option></select></label>
     <div id="capture-body" class="capture-body"></div><p id="capture-error" class="error" role="alert"></p>
     <p class="subtle">${target ? 'いま開いている記録に追加します。' : '保存したら、そのまま読書へ。読み取りは続きます。'}</p>`);
   $('#capture-mode').value = mode;
   const render = () => {
-    stopRecorder(); setMode($('#capture-mode').value);
+    stopRecorder(); stopImport(); setMode($('#capture-mode').value);
     const selected = $('#capture-mode').value;
     $('#capture-error').textContent = '';
     if (selected === 'image') {
@@ -162,12 +224,52 @@ function recordDialog(target = null) {
           timer = setTimeout(() => { if (recording.state === 'recording') recording.stop(); }, 120000);
         } catch (error) { $('#capture-error').textContent = error.name === 'NotAllowedError' ? 'マイクが使えません。音声ファイルか、写真・文章を使ってください。' : error.message; }
       });
+    } else if (selected === 'import') {
+      importPicker(target);
     } else {
       $('#capture-body').innerHTML = `<form id="text-form"><label><span>残したい文章・一言</span><textarea id="capture-text" maxlength="20000" placeholder="どこが、どう面白かった？" required></textarea></label><button class="primary" type="submit">残す</button></form>`;
       bind('#text-form', 'submit', event => { event.preventDefault(); saveUpload(null, $('#capture-text').value, target); });
     }
   };
   bind('#capture-mode', 'change', render); render();
+}
+
+async function importPicker(target) {
+  $('#capture-body').innerHTML=`<label><span>どこがどう面白い？（任意）</span><textarea id="import-note" maxlength="20000"></textarea></label>
+    <input id="import-file" type="file" accept="application/pdf,.zip,.cbz"><button id="pick-import" class="primary">ファイルを選ぶ</button><p>端末内で変換し、選んだ写真だけを残します。25MBまで。候補120点まで。</p><div id="import-resume"></div><div id="import-candidates"></div>`;
+  bind('#pick-import','click',()=>$('#import-file').click());
+  bind('#import-file','change',e=>{if(e.target.files[0])prepareImport(e.target.files[0],target);});
+  try {
+    const jobs=await pendingImports();if(!$('#import-resume'))return;
+    $('#import-resume').innerHTML=jobs.map(j=>`<div class="import-resume-row"><button class="quiet" data-resume-import="${j.id}">${esc(j.file.name||'変換途中のファイル')}を続ける</button><button class="quiet" data-remove-import="${j.id}">候補を削除</button></div>`).join('');
+    document.querySelectorAll('[data-resume-import]').forEach(el=>el.addEventListener('click',()=>prepareImport(jobs.find(j=>j.id===el.dataset.resumeImport).file,target)));
+    document.querySelectorAll('[data-remove-import]').forEach(el=>el.addEventListener('click',async()=>{await removeImport(jobs.find(j=>j.id===el.dataset.removeImport));importPicker(target);}));
+  }catch(e){if($('#capture-error'))$('#capture-error').textContent=e.message;}
+}
+async function prepareImport(file,target) {
+  stopImport();importController=new AbortController();const controller=importController;
+  const note=$('#import-note')?.value||'';
+  $('#pick-import').hidden=true;$('#import-resume').innerHTML='';$('#capture-error').textContent='候補を変換しています。閉じても端末内に残ります。';
+  try {
+    const job=await openImport(file,(done,total)=>{if(!controller.signal.aborted&&$('#capture-error'))$('#capture-error').textContent=`候補を変換中 ${done} / ${total}`;},controller.signal);
+    if(controller.signal.aborted)return;
+    if(job.status==='completed'){ $('#capture-error').textContent='このファイルは取り込み済みです。';$('#pick-import').hidden=false;return; }
+    $('#capture-error').textContent=job.status==='partial'?'変換できなかった候補があります。元のファイルは端末内に残しています。':'';
+    $('#import-candidates').innerHTML=`<p>残したい写真を1〜8枚選んでください。</p><div class="import-grid">${job.items.map((item,i)=>{
+      const url=item.thumbnail?URL.createObjectURL(item.thumbnail):null;if(url)importURLs.push(url);
+      return `<label class="import-item"><input type="checkbox" data-import-key="${esc(item.key)}" ${job.selected.includes(item.key)?'checked':''} ${item.error?'disabled':''}>${url?`<img src="${url}" alt="候補画像 ${i+1}">`:`<span>${esc(item.error)}</span>`}</label>`;
+    }).join('')}</div><button id="save-import" class="primary">選んだ写真を残す</button><details class="fold"><summary>変換に失敗した候補を再試行</summary><button id="retry-import" class="quiet">同じファイルを変換し直す</button></details>`;
+    $('#import-note').value=note;
+    document.querySelectorAll('[data-import-key]').forEach(el=>el.addEventListener('change',async()=>{try{await selectImport(job,Array.from(document.querySelectorAll('[data-import-key]:checked')).map(e=>e.dataset.importKey));$('#capture-error').textContent='';}catch(e){el.checked=false;$('#capture-error').textContent=e.message;}}));
+    bind('#retry-import','click',()=>prepareImport(job.file,target));
+    bind('#save-import','click',async()=>{
+      const button=$('#save-import');button.disabled=true;
+      try{await selectImport(job,Array.from(document.querySelectorAll('[data-import-key]:checked')).map(e=>e.dataset.importKey));const files=await importFiles(job);
+        await saveUpload(files,null,target,{files,text:null,target,note:$('#import-note').value,key:job.request_key,import_job:job});
+      }catch(e){if($('#capture-error'))$('#capture-error').textContent=e.message;}
+      finally{button.disabled=false;}
+    });
+  }catch(e){if(!controller.signal.aborted&&$('#capture-error')){ $('#capture-error').textContent=e.name==='PasswordException'?'パスワード付きPDFは端末で解除してから取り込んでください。':e.message;$('#pick-import').hidden=false;}}
 }
 
 async function saveUpload(file, text, target, reuse = null, note = '') {
@@ -180,15 +282,14 @@ async function saveUpload(file, text, target, reuse = null, note = '') {
   $('#capture-error').textContent = '保存しています。';
   dialog.querySelectorAll('button,input,textarea,select').forEach(el => { el.disabled = true; });
   try {
-    const headers = { 'Idempotency-Key':pending.key };
-    let payload;
-    if (pending.files.length) { payload = new FormData(); pending.files.forEach(f => payload.append('file', f)); payload.set('note',pending.note); }
-    else { headers['Content-Type'] = 'application/json'; payload = JSON.stringify({ text:pending.text, note:pending.note }); }
-    if (target) headers['X-Capture-Version'] = String(target.version);
-    await api(target ? `/api/captures/${target.id}/assets` : '/api/captures', { method:'POST', headers, body:payload });
-    uploading = false; uploadPending = null; dialog.close();
-    if (target) await openCapture(target.id); else await home();
-    showNotice('保存しました。分析はあとで読めます。');
+    await queueUpload(pending);
+    let localOnly=false;
+    try{if(!navigator.onLine)throw new TypeError('offline');await sendUpload(pending,api);await removePending(pending.key);}
+    catch(e){if(e.status){await pendingFailure(pending.key,e);throw e;}localOnly=true;}
+    if(pending.import_job)await finishImport(pending.import_job);
+    uploading = false; uploadPending = null; stopImport(); dialog.close();
+    if (target && !localOnly) await openCapture(target.id); else await home();
+    showNotice(localOnly?'端末内に保存しました。接続が戻ると送信します。':'保存しました。分析はあとで読めます。');
   } catch (error) {
     uploading = false;
     if (!dialog.open) return;
@@ -224,12 +325,14 @@ function renderCapture() {
     ${proposal?`<section class="draft"><h2>${proposal.adopted_view_id?'自分の漫画観に残しました':proposal.view_id?'漫画観の更新案':'漫画観の案'}</h2><p class="prose">${esc(proposal.data.text)}</p><p class="subtle">${esc(proposal.data.reason)}</p>${proposal.adopted_view_id?`<a href="#" id="adopted-view">漫画観と履歴を読む</a>`:`<button id="adopt" class="primary">${proposal.view_id?'この見方に更新':'自分の漫画観にする'}</button>`}</section>`:''}
     ${h.questions.length?`<section class="detail-section"><h2>考えの続き</h2>${h.questions.map(q=>`<p>${esc(q.text)}</p>`).join('')}</section>`:''}
     ${h.uncertainties.length?`<p class="subtle">分析の留保：${h.uncertainties.map(esc).join(' ／ ')}</p>`:''}`:''}
+    <details id="local-graph" class="fold"><summary>このメモのつながりを読む</summary><div id="graph-body"></div></details>
     <details class="fold"><summary>一言・写真・音声を足す</summary><button id="supplement" class="quiet">同じメモに追加する</button></details>
     <details class="fold"><summary>原資料・訂正など</summary>
     ${c.assets.filter(a=>a.mime.startsWith('audio/')).map(a=>`<audio controls preload="none" src="/api/assets/${a.id}"></audio>`).join('')}
     ${h?.extracted_text?`<p class="prose">${esc(h.extracted_text)}</p>`:''}<div class="secondary-links"><button id="correct">一言・作品名を訂正</button><button id="retry">もう一度分析</button><button id="delete" class="danger">このメモを削除</button></div>
     ${h?.concepts.length?`<p class="concepts">${h.concepts.map(k=>esc(k.name)).join(' · ')}</p>`:''}</details></article>`;
   wireHeader();bind('#back','click',()=>home().catch(e=>showNotice(e.message)));
+  bind('#local-graph','toggle',()=>{if($('#local-graph').open&&!$('#graph-body').innerHTML)renderGraph(c.id).catch(e=>showNotice(e.message));});
   bind('#supplement','click',()=>recordDialog(c));
   document.querySelectorAll('[data-compare]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();openCapture(a.dataset.compare).catch(e=>showNotice(e.message));}));
   bind('#adopted-view','click',e=>{e.preventDefault();openView(proposal.adopted_view_id).catch(e=>showNotice(e.message));});
@@ -286,6 +389,28 @@ async function openView(viewId) {
   }));
 }
 
+async function renderGraph(captureId) {
+  const g=await api(`/api/captures/${captureId}/graph`);if(!$('#graph-body')||currentCapture?.id!==captureId)return;
+  const labels={claim:'根拠・解釈',concept:'概念',mechanism:'仕組み',question:'問い'},relationLabels={example_of:'例になっている',supports_interpretation:'解釈を支える',qualifies:'成立条件を加える',analogous_to:'似た構造',contrasts_with:'対照',evidence_for:'根拠になっている'};
+  const nodes=g.nodes.map(n=>({...n,data:JSON.parse(n.data)})),name=n=>n?.data.name||n?.data.text||n?.data.expression||'記述';
+  $('#graph-body').innerHTML=nodes.length?`<p class="subtle">このメモの現在の分析だけを表示しています。</p>${nodes.map(n=>`<div class="graph-node"><span class="origin">${labels[n.kind]}</span><p>${esc(name(n))}</p>${n.concept_id?`<button class="quiet" data-concept="${n.concept_id}">同じ概念のメモ・別名・整理</button>`:''}</div>`).join('')}
+    ${g.relations.map(r=>{const d=JSON.parse(r.data);return `<p class="graph-relation">${esc(name(nodes.find(n=>n.id===r.from_id)))} → ${esc(relationLabels[r.kind]||r.kind)} → ${esc(name(nodes.find(n=>n.id===r.to_id)))}${d.reason?`<br><span class="subtle">${esc(d.reason)} ${(d.conditions||[]).map(esc).join(' ／ ')}</span>`:''}</p>`;}).join('')}`:'新しい分析ができると、ここに根拠とつながりを表示します。';
+  document.querySelectorAll('[data-concept]').forEach(el=>el.addEventListener('click',()=>conceptDialog(el.dataset.concept).catch(e=>showNotice(e.message))));
+}
+async function conceptDialog(conceptId) {
+  const k=await api(`/api/concepts/${conceptId}`);
+  modal(k.concept.name,`<p>${esc(k.concept.description)}</p>${k.aliases.length?`<p class="subtle">別名：${k.aliases.map(a=>esc(a.alias)).join(' ／ ')}</p>`:''}
+    ${k.captures.map(c=>`<button class="capture-row" data-concept-record="${c.id}">${esc(c.source_title||'作品名なし')} · ${esc(c.result.summary)}</button>`).join('')}
+    <details class="fold"><summary>別名を足す・同じ意味の概念と統合する</summary><form id="concept-form"><label><span>整理の方法</span><select id="concept-kind"><option value="alias">別名を足す</option><option value="merge">同じ意味として統合する</option></select></label>
+    <label id="alias-label"><span>別名</span><input id="concept-alias" maxlength="200"></label><label id="merge-label" hidden><span>統合先（説明も確認してください）</span><select id="concept-target">${k.concepts.filter(v=>v.id!==k.canonical_id).map(v=>`<option value="${v.id}">${esc(v.name)} · ${esc(v.description)}</option>`).join('')}</select></label>
+    <label><span>理由</span><input id="concept-reason" required maxlength="2000"></label><p id="concept-error" class="error"></p><button class="quiet">整理を残す</button></form><p class="subtle">元の分析・写真・漫画観の履歴は残ります。</p></details>
+    <details class="fold"><summary>整理の履歴・統合を戻す</summary>${k.actions.filter(a=>a.data.concept_id===k.canonical_id||a.data.source_id===conceptId||a.data.target_id===k.canonical_id).map(a=>`<p>第${a.revision}版 · ${esc(a.reason)} ${a.undone?'（取り消し済み）':`<button class="quiet" data-undo-concept="${a.id}">この整理を戻す</button>`}</p>`).join('')}</details>`);
+  document.querySelectorAll('[data-concept-record]').forEach(el=>el.addEventListener('click',()=>{closeDialog();openCapture(el.dataset.conceptRecord).catch(e=>showNotice(e.message));}));
+  bind('#concept-kind','change',()=>{$('#alias-label').hidden=$('#concept-kind').value!=='alias';$('#merge-label').hidden=$('#concept-kind').value!=='merge';});
+  bind('#concept-form','submit',async e=>{e.preventDefault();try{await api(`/api/concepts/${conceptId}`,json('POST',{kind:$('#concept-kind').value,revision:k.revision,alias:$('#concept-alias').value,target_id:$('#concept-target').value,reason:$('#concept-reason').value}));await conceptDialog(conceptId);}catch(e){$('#concept-error').textContent=e.message;}});
+  document.querySelectorAll('[data-undo-concept]').forEach(el=>el.addEventListener('click',async()=>{try{await api(`/api/concepts/${conceptId}`,json('POST',{kind:'undo',revision:k.revision,action_id:el.dataset.undoConcept,reason:'本人がこの整理を取り消した。'}));await conceptDialog(conceptId);}catch(e){showNotice(e.message);}}));
+}
+
 function privacyDialog() {
   modal('AIと保存について', `<div class="privacy"><p>残した写真・音声・文章は、このアプリの非公開データとして保存します。</p>
     <p>解析には、対象の写真・音声・文章と、比較に必要な過去の知見（直近24件まで）、概念（40件まで）、漫画観（12件まで）をOpenAIへ送ります。通常の記録ごとに確認操作はありません。</p>
@@ -305,7 +430,8 @@ setInterval(async () => {
         if (fresh.job?.state !== currentCapture.job?.state || fresh.version !== currentCapture.version) { currentCapture = fresh; renderCapture(); }
       }
     } else if (!currentCapture && !currentView) {
-      state = await api(`/api/state?q=${encodeURIComponent(query)}`); renderFeed();
+      const completed=await syncUploads(api,state.instance_id);if(!state)return;
+      state = await api(`/api/state?q=${encodeURIComponent(query)}`);if(!query)await rememberState(state);state.device_pending=await pendingUploads();renderFeed();if(completed.length)showNotice('端末のメモを同期しました。分析はあとで読めます。');
     }
   } catch (e) { if (e.status !== 401) { /* Preserve the last readable page during a temporary outage. */ } }
   finally { pollBusy = false; }
@@ -334,4 +460,6 @@ document.addEventListener('drop',event=>{
     else receivePhotos(photos);
   }
 });
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+window.addEventListener('online',()=>{if(state)home().then(()=>syncUploads(api,state.instance_id)).then(()=>home()).catch(e=>showNotice(e.message));});
 home().catch(error => { if (error.status !== 401) { app.innerHTML = '<p class="loading">接続を確認して、画面を開き直してください。</p>'; } });

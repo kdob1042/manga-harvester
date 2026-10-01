@@ -1,9 +1,10 @@
+import {reflectionStatements} from './reflection.ts';
 import {stmt,rows,id,now,digest,type Harvest,type AiContext,type Capture,type Asset,type View} from './core.ts';
 
 export async function contextFor(env:Env,c:Capture,assets:Asset[]):Promise<AiContext>{
  const [prior,concepts,views]=await Promise.all([
   rows<{id:string;version:number;source_title:string|null;generation_id:string;result:string}>(env,`SELECT c.id,c.version,s.title AS source_title,g.id AS generation_id,h.result FROM captures c JOIN harvests h ON h.capture_id=c.id AND h.version=c.version JOIN generations g ON g.capture_id=c.id AND g.version=c.version LEFT JOIN sources s ON s.id=c.source_id WHERE c.id<>? ORDER BY c.updated_at DESC LIMIT 24`,c.id),
-  rows<{id:string;name:string;description:string}>(env,`SELECT DISTINCT k.id,k.name,k.description FROM concepts k JOIN nodes n ON n.concept_id=k.id JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version ORDER BY g.created_at DESC LIMIT 40`),
+  rows<{id:string;name:string;description:string}>(env,`SELECT DISTINCT k.id,k.name,k.description FROM nodes n LEFT JOIN concept_mappings m ON m.source_id=n.concept_id JOIN concepts k ON k.id=coalesce(m.target_id,n.concept_id) JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version ORDER BY g.created_at DESC LIMIT 40`),
   rows<View>(env,'SELECT * FROM views ORDER BY created_at DESC LIMIT 12'),
  ]);
  return {assets,candidates:prior.map(({result,...p})=>({...p,harvest:JSON.parse(result) as Harvest})),concepts,views};
@@ -48,6 +49,7 @@ export async function graphStatements(env:Env,c:Capture,h:Harvest,context:AiCont
  for(const p of [...(h.view_draft?[{...h.view_draft,view_id:null,base_revision:null}]:[]),...h.view_proposals]){
   s.push(stmt(env,`INSERT INTO proposals(id,generation_id,view_id,base_revision,data) SELECT ?,?,?,?,? WHERE ${guard}`,id(),generation,p.view_id,p.base_revision,JSON.stringify(p),jobId,token));
  }
+ s.push(...await reflectionStatements(env,c,h,context,generation,guard,jobId,token));
  return s;
 }
 

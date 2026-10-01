@@ -19,7 +19,7 @@ export async function dispatch(env:Env) {
 
 export async function processJob(env:Env,jobId:string,fetcher?:typeof fetch) {
  const token=id(),time=now();
- const job=await stmt(env,`UPDATE jobs SET state='running',attempts=attempts+1,lease_token=?,lease_until=?,model=?,prompt_version='manga-v2'
+ const job=await stmt(env,`UPDATE jobs SET state='running',attempts=attempts+1,lease_token=?,lease_until=?,model=?,prompt_version='manga-v3'
  WHERE id=? AND state='pending' AND available_at<=? RETURNING *`,token,time+900000,env.OPENAI_MODEL,jobId,time).first<Job>();
  if(!job)return;
  const capture=await getCapture(env,job.capture_id);

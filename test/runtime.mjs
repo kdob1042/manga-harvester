@@ -2,7 +2,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 export function runtime() {
  const sqlite=new DatabaseSync(':memory:');
- for(const f of ['0001_initial.sql','0002_manga.sql'])sqlite.exec(readFileSync(new URL(`../migrations/${f}`,import.meta.url),'utf8'));
+ for(const f of ['0001_initial.sql','0002_manga.sql','0003_reflections.sql','0004_concepts.sql','0005_sync.sql'])sqlite.exec(readFileSync(new URL(`../migrations/${f}`,import.meta.url),'utf8'));
  class Statement {
   constructor(sql,values=[]){this.sql=sql;this.values=values;}
   bind(...v){return new Statement(this.sql,v);}
@@ -31,7 +31,7 @@ export function fixture(assetId,note=''){
  concepts:[{id:'k1',name:'反応の先行提示',description:'対象より先に反応を見せ、読者の期待を作る表現。',existing_id:null,claim_ids:['c1','c2']}],
  mechanisms:[{id:'m1',context:'対象がまだ見えない',expression:'反応を先に見せる',information_change:'何を見ているかを保留する',possible_effect:'期待や緊張につながる可能性',limits:'対象が既知なら効果は異なる',claim_ids:['c1','c2']}],
  relations:[{from:'c1',to:'m1',kind:'supports_interpretation',reason:'反応の描写が根拠',conditions:[]}],questions:[{id:'q1',text:'対象を先に見せると、何が変わるか？',claim_ids:['c2']}],
- reactions:note?[{quote:note,kind:'like',interpretation:'本人が好意を明示した。'}]:[],comparisons:[],view_draft:{text:'人物の反応から対象への期待を作る演出を大事にしたい。',reason:'取り込んだ写真の情報提示順から考えた案。',claim_ids:['c2']},view_proposals:[]};
+ reactions:note?[{quote:note,kind:'like',interpretation:'本人が好意を明示した。'}]:[],comparisons:[],counterfactuals:[],view_draft:{text:'人物の反応から対象への期待を作る演出を大事にしたい。',reason:'取り込んだ写真の情報提示順から考えた案。',claim_ids:['c2']},view_proposals:[]};
 }
 export function provider(make,onCall=()=>{}){
  return async(url,init)=>{onCall(url,init);if(url.endsWith('/audio/transcriptions'))return Response.json({text:'この反応が好き'});const input=JSON.parse(init.body),context=JSON.parse(input.input[0].content[0].text);return Response.json({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(await make(context))}]}],usage:{input_tokens:100,output_tokens:200}});};

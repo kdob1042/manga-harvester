@@ -10,6 +10,7 @@ export type Harvest = {
  questions:{id:string;text:string;claim_ids:string[]}[];
  reactions:{quote:string;kind:string;interpretation:string}[];
  comparisons:{target_id:string;kind:string;shared_structure:string;differences:string;question:string;claim_ids:string[];target_claim_ids:string[]}[];
+ counterfactuals?:{change:string;possible_effect:string;limits:string;claim_ids:string[]}[];
  view_draft:{text:string;reason:string;claim_ids:string[]}|null;
  view_proposals:{view_id:string;base_revision:number;text:string;reason:string;claim_ids:string[]}[];
 };

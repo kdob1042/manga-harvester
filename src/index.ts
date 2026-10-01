@@ -1,3 +1,5 @@
+import {searchCaptures,conceptDetail,organizeConcept} from './discovery.ts';
+import {currentReflection,revisit} from './reflection.ts';
 import {Buffer} from 'node:buffer';
 import {HttpError,fail,text,version,jsonBody,stmt,rows,getCapture,now,type Capture,type Harvest,type Asset,type View} from './core.ts';
 import {loggedIn,login,logout} from './auth.ts';
@@ -11,11 +13,12 @@ function headers(response:Response,env:Env){
  const result=new Response(response.body,response);
  result.headers.set('Cache-Control','no-store');result.headers.set('X-Content-Type-Options','nosniff');
  result.headers.set('Referrer-Policy','same-origin');
- result.headers.set('Content-Security-Policy',"default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+ result.headers.set('Content-Security-Policy',"default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
  result.headers.set('Permissions-Policy','camera=(self), microphone=(self), geolocation=()');
  if(env.APP_ORIGIN?.startsWith('https:'))result.headers.set('Strict-Transport-Security','max-age=31536000');return result;
 }
 async function list(env:Env,search:string){
+ if(search.trim())return searchCaptures(env,search);
  const escaped=`%${search.replace(/[\\%_]/g,'\\$&')}%`;
  const data=await rows<Capture&{result:string|null;state:string;error_code:string|null;original_preview:string}>(env,`SELECT c.id,c.kind,c.version,c.created_at,c.source_inherited,
  s.title AS source_title,s.certainty AS source_certainty,j.state,j.error_code,h.result,substr(CASE WHEN c.note<>'' THEN c.note ELSE c.original_text END,1,100) AS original_preview
@@ -45,13 +48,15 @@ async function editView(request:Request,env:Env,viewId:string){
 async function deleteCapture(request:Request,env:Env,captureId:string){
  const input=await jsonBody(request),base=version(input.version);
  const result=await env.DB.batch([
+  stmt(env,`INSERT OR IGNORE INTO retired_requests SELECT m.request_key,m.request_hash,m.capture_id,? FROM mutations m JOIN captures c ON c.id=m.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
+  stmt(env,`INSERT OR IGNORE INTO capture_tombstones SELECT id,? FROM captures WHERE id=? AND version=?`,now(),captureId,base),
   stmt(env,`INSERT OR IGNORE INTO object_deletions(object_key,created_at) SELECT a.object_key,? FROM assets a JOIN captures c ON c.id=a.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
   stmt(env,'DELETE FROM captures WHERE id=? AND version=?',captureId,base),
   stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL)'),
   stmt(env,"DELETE FROM settings WHERE key='current_source' AND value IN (SELECT id FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL))"),
   stmt(env,'DELETE FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL)'),
  ]);
- if(!result[1].meta.changes)fail(409,'記録が更新されています。開き直してください。');
+ if(!result[3].meta.changes)fail(409,'記録が更新されています。開き直してください。');
  // Deletion intent is durable even if R2 temporarily fails. Private download routes already stop resolving.
  try{await cleanup(env);}catch{return json({ok:true,originals_pending:true});}return json({ok:true});
 }
@@ -62,7 +67,7 @@ function exportData(env:Env){
  const stream=new ReadableStream<Uint8Array>({async start(controller){
   try{
    controller.enqueue(encoder.encode(`{"format":"manga-harvester/v2","exported_at":${JSON.stringify(new Date().toISOString())}`));
-   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides']){
+   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides','reflections','revisit_events','concept_actions','concept_mappings','concept_aliases']){
     controller.enqueue(encoder.encode(`,${JSON.stringify(table)}:[`));let offset=0,first=true;
     while(true){
      const records=await rows<Record<string,unknown>>(env,`SELECT * FROM ${table} ORDER BY rowid LIMIT 50 OFFSET ?`,offset);
@@ -99,13 +104,18 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
  if(path==='/api/logout'&&method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
  if(path==='/api/state'&&method==='GET'){
   const day=new Date().toISOString().slice(0,10);
-  const [captures,views,current,usage]=await Promise.all([
+  const [captures,views,current,usage,reflection]=await Promise.all([
    list(env,(url.searchParams.get('q')||'').slice(0,200)),rows<View>(env,'SELECT * FROM views ORDER BY created_at DESC LIMIT 100'),
    stmt(env,"SELECT s.* FROM sources s JOIN settings t ON t.value=s.id WHERE t.key='current_source'").first(),
-   stmt(env,'SELECT calls FROM ai_daily WHERE day=?',day).first<{calls:number}>(),
+   stmt(env,'SELECT calls FROM ai_daily WHERE day=?',day).first<{calls:number}>(),currentReflection(env),
   ]);
-  return json({ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
+  return json({ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
  }
+ const conceptMatch=/^\/api\/concepts\/([a-f0-9-]{36})$/.exec(path);
+ if(conceptMatch&&method==='GET')return json(await conceptDetail(env,conceptMatch[1]));
+ if(conceptMatch&&method==='POST')return json(await organizeConcept(env,conceptMatch[1],await jsonBody(request)));
+ const reflectionMatch=/^\/api\/reflections\/([a-f0-9-]{36})$/.exec(path);
+ if(reflectionMatch&&method==='POST'){if(!await revisit(env,reflectionMatch[1],(await jsonBody(request)).action))fail(400,'振り返りが見つかりません。');return json({ok:true});}
  if(path==='/api/captures'&&method==='POST'){
   const saved=await saveCapture(request,env);ctx.waitUntil(dispatch(env));return saved;
  }
