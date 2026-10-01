@@ -18,7 +18,7 @@ xcodebuild -project MangaHarvester.xcodeproj -scheme MangaHarvester -sdk iphones
 
 ## 保存・同期
 
-- 写真選択／撮影後、任意の一言とともにApp Group内へ保存します。対応する元JPEG・PNG・WebPを保持し、HEICと大きな画像は端末内でJPEGへ変換します。
+- 連続撮影は1枚ごとに端末へ撮影途中のまとまりを保存し、最大8枚で「この写真群を残す」と送信待ちへ移します。中断しても、一覧から写真群を残すか原資料を書き出せます。写真選択／撮影後、任意の一言とともにApp Group内へ保存します。対応する元JPEG・PNG・WebPを保持し、HEICと大きな画像は端末内でJPEGへ変換します。
 - 録音終了後、元M4Aを端末へ保存します。カメラ・マイクの許可拒否は写真選択・文章入力へ戻れます。
 - 共有拡張は、共有元が実際に提供した写真・文章・公開URLだけを保存します。共有元の隠れた写真や本文を取得しません。URLは外部資料レコードへ送ります。
 - 非公開原資料はApp Groupの`CaptureOutbox/<UUID>/`に保存し、ファイルを保存した後で`record.json`をatomicに書きます。端末の最初のロック解除前は読み出せません。iCloudバックアップ対象から除外します。
@@ -33,4 +33,4 @@ xcodebuild -project MangaHarvester.xcodeproj -scheme MangaHarvester -sdk iphones
 
 ## 未確認
 
-署名、App Groupの実機共有、カメラ・写真権限、実マイク録音、共有元ごとのNSItemProvider形式、OSによる中断・復帰、実サーバーへのCookie連携、端末の容量不足を実機で確認する必要があります。App Store提出は行っていません。
+GitHub Actionsで署名なしSimulator向けコンパイルは通っています。署名、App Groupの実機共有、カメラ・写真権限、実マイク録音、共有元ごとのNSItemProvider形式、OSによる中断・復帰、実サーバーへのCookie連携、端末の容量不足を実機で確認する必要があります。App Store提出は行っていません。

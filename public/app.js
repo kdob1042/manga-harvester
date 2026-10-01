@@ -68,11 +68,11 @@ function wireHeader() {
     query = event.target.value;semanticQuery='';
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
-      try { state = await api(`/api/state?q=${encodeURIComponent(query)}`); renderFeed(); }
+      try { const search=query,fresh=await api(`/api/state?q=${encodeURIComponent(search)}`);if(search!==query||semanticQuery===query&&query)return;state=fresh;state.device_pending=await pendingUploads();renderFeed(); }
       catch (error) { showNotice(error.message); }
     }, 300);
   });
-  bind('#search','keydown',async event=>{if(event.key!=='Enter'||!query.trim())return;event.preventDefault();const search=query;$('#feed')?.setAttribute('aria-busy','true');try{const result=await api('/api/search',json('POST',{query:search}));if(search!==query||!$('#feed'))return;state.captures=result.captures;semanticQuery=result.semantic?search:'';renderFeed();showNotice(result.semantic?`直近${result.searched_candidates}件から、根拠付きで関連を探しました。`:'一言・表現の検索結果を表示しました。');}catch(e){showNotice(e.message);}finally{$('#feed')?.removeAttribute('aria-busy');}});
+  bind('#search','keydown',async event=>{if(event.key!=='Enter'||!query.trim())return;event.preventDefault();const search=query;$('#feed')?.setAttribute('aria-busy','true');try{const result=await api('/api/search',json('POST',{query:search}));if(search!==query||!$('#feed'))return;state.captures=result.captures;semanticQuery=result.semantic?search:'';renderFeed();showNotice(result.semantic?`候補${result.searched_candidates}件から、根拠付きで関連を探しました。`:'一言・表現の検索結果を表示しました。');}catch(e){showNotice(e.message);}finally{$('#feed')?.removeAttribute('aria-busy');}});
   bind('#privacy', 'click', privacyDialog);
   bind('#logout', 'click', logoutDevice);
 }
@@ -260,15 +260,15 @@ async function prepareImport(file,target) {
     $('#capture-error').textContent=job.status==='partial'?'変換できなかった候補があります。元のファイルは端末内に残しています。':'';
     $('#import-candidates').innerHTML=`<p>残したい写真を1〜8枚選んでください。</p><div class="import-grid">${job.items.map((item,i)=>{
       const url=item.thumbnail?URL.createObjectURL(item.thumbnail):null;if(url)importURLs.push(url);
-      return `<label class="import-item"><input type="checkbox" data-import-key="${esc(item.key)}" ${job.selected.includes(item.key)?'checked':''} ${item.error?'disabled':''}>${url?`<img src="${url}" alt="候補画像 ${i+1}">`:`<span>${esc(item.error)}</span>`}</label>`;
+      return `<label class="import-item"><input type="checkbox" data-import-key="${esc(item.key)}" ${job.selected.includes(item.key)?'checked':''} ${item.error||(job.imported||[]).some(x=>x.key===item.key)?'disabled':''}>${url?`<img src="${url}" alt="候補画像 ${i+1}">${(job.imported||[]).some(x=>x.key===item.key)?'<span class="subtle">取り込み済み</span>':''}`:`<span>${esc(item.error)}</span>`}</label>`;
     }).join('')}</div><button id="save-import" class="primary">選んだ写真を残す</button><details class="fold"><summary>変換に失敗した候補を再試行</summary><button id="retry-import" class="quiet">同じファイルを変換し直す</button></details>`;
     $('#import-note').value=note;
     document.querySelectorAll('[data-import-key]').forEach(el=>el.addEventListener('change',async()=>{try{await selectImport(job,Array.from(document.querySelectorAll('[data-import-key]:checked')).map(e=>e.dataset.importKey));$('#capture-error').textContent='';}catch(e){el.checked=false;$('#capture-error').textContent=e.message;}}));
     bind('#retry-import','click',()=>prepareImport(job.file,target));
     bind('#save-import','click',async()=>{
       const button=$('#save-import');button.disabled=true;
-      try{await selectImport(job,Array.from(document.querySelectorAll('[data-import-key]:checked')).map(e=>e.dataset.importKey));const files=await importFiles(job);
-        await saveUpload(files,null,target,{files,text:null,target,note:$('#import-note').value,key:job.request_key,import_job:job});
+      try{await selectImport(job,Array.from(document.querySelectorAll('[data-import-key]:checked')).map(e=>e.dataset.importKey));const files=await importFiles(job,controller.signal);if(controller.signal.aborted)return;
+        await saveUpload(files,null,target,{files,text:null,target,note:$('#import-note').value,key:job.request_key,import_job:job,import_receipt:{source_hash:job.id,source_name:job.file.name||'取り込み元',source_size:job.file.size,format:job.kind,conversion_keys:[...job.selected]}});
       }catch(e){if($('#capture-error'))$('#capture-error').textContent=e.message;}
       finally{button.disabled=false;}
     });
@@ -286,10 +286,10 @@ async function saveUpload(file, text, target, reuse = null, note = '') {
   dialog.querySelectorAll('button,input,textarea,select').forEach(el => { el.disabled = true; });
   try {
     await queueUpload(pending);
-    let localOnly=false;
-    try{if(!navigator.onLine)throw new TypeError('offline');await sendUpload(pending,api);await removePending(pending.key);}
+    let localOnly=false,saved;
+    try{if(!navigator.onLine)throw new TypeError('offline');saved=await sendUpload(pending,api);await removePending(pending.key);}
     catch(e){if(e.status){await pendingFailure(pending.key,e);throw e;}localOnly=true;}
-    if(pending.import_job)await finishImport(pending.import_job);
+    if(pending.import_job)await finishImport(pending.import_job,pending.import_receipt,saved?.id);
     uploading = false; uploadPending = null; stopImport(); dialog.close();
     if (target && !localOnly) await openCapture(target.id); else await home();
     showNotice(localOnly?'端末内に保存しました。接続が戻ると送信します。':'保存しました。分析はあとで読めます。');
@@ -332,6 +332,7 @@ function renderCapture() {
     <details id="local-graph" class="fold"><summary>このメモのつながりを読む</summary><div id="graph-body"></div></details>
     <details class="fold"><summary>一言・写真・音声を足す</summary><button id="supplement" class="quiet">同じメモに追加する</button></details>
     <details class="fold"><summary>原資料・訂正など</summary>
+    ${(c.imports||[]).map(i=>`<p class="subtle">取り込み元：${esc(i.source_name)} · ${esc(i.format)} · ${Math.round(i.source_size/1024)}KB<br>元ファイルSHA-256：${esc(i.source_hash)}<br>選択した変換画像：${esc(i.conversion_key)} · <a href="/api/assets/${i.asset_id}" target="_blank" rel="noopener">保存した写真</a></p>`).join('')}
     ${c.assets.filter(a=>a.mime.startsWith('audio/')).map(a=>`<audio controls preload="none" src="/api/assets/${a.id}"></audio>`).join('')}
     ${h?.extracted_text?`<p class="prose">${esc(h.extracted_text)}</p>`:''}<div class="secondary-links"><button id="correct">一言・作品名を訂正</button><button id="retry">もう一度分析</button><button id="delete" class="danger">このメモを削除</button></div>
     ${h?.concepts.length?`<p class="concepts">${h.concepts.map(k=>esc(k.name)).join(' · ')}</p>`:''}</details></article>`;
@@ -373,7 +374,7 @@ async function openView(viewId) {
     <section class="detail-section"><h2>この見方の根拠</h2><p>${esc(v.revisions[0].references.source_title || '残した資料')}${''}</p>
     ${v.revisions[0].reference_state!=='deleted' ? `<a href="#" id="view-source">原資料と解析を読む</a>${v.revisions[0].reference_state==='changed'?'<p class="subtle">根拠のメモは更新されています。履歴には採用時の記録を残しています。</p>':''}` : '<p class="subtle">元のメモは削除されました。採用時の漫画観と改訂履歴を残しています。</p>'}</section>
     <details class="fold"><summary>見方を編集・履歴を読む</summary><button id="edit-view" class="quiet">見方を編集する</button>
-    ${v.revisions.map(r => `<div class="history"><p class="subtle">第${r.version}版 · ${date(r.created_at)}</p><p class="prose">${esc(r.body)}</p><p class="subtle">${esc(r.reason)}</p>${r.version !== v.version ? `<button data-restore="${r.version}">この版へ戻す</button>` : ''}</div>`).join('')}</details></article>`;
+    ${v.revisions.map(r => `<div class="history"><p class="subtle">第${r.version}版 · ${date(r.created_at)}</p><p class="prose">${esc(r.body)}</p><p class="subtle">${esc(r.reason)}</p>${revisionEvidence(r)}${r.version !== v.version ? `<button data-restore="${r.version}">この版へ戻す</button>` : ''}</div>`).join('')}</details></article>`;
   wireHeader(); bind('#back','click', () => home().catch(e => showNotice(e.message)));
   bind('#view-source','click', event => { event.preventDefault(); openCapture(v.revisions[0].references.capture_id).catch(e => showNotice(e.message)); });
   bind('#edit-view','click', () => {
@@ -405,16 +406,24 @@ function externalInput(target){
 }
 function externalHTML(c){
   return `<details class="fold" id="external-materials"><summary>外部資料と照合する${c.external_sources.length?` · ${c.external_sources.length}件`:''}</summary>
-    ${c.external_sources.map(s=>`<div class="knowledge-item"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title||s.url)}</a><span class="origin">${esc(sourceTypes[s.source_type])} · 本人が提供、本文未確認</span>${s.quote?`<blockquote>${esc(s.quote)}</blockquote>`:''}<p class="subtle">${esc(s.scope)} · ${esc(s.speaker||'発言者未確認')} · ${esc(s.published_at||'公開日未確認')}<br>${date(s.received_at)}に記録</p></div>`).join('')}
+    ${c.external_sources.map(s=>`<div class="knowledge-item"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title||s.url)}</a><span class="origin">${esc(sourceTypes[s.source_type])} · 本人が提供、本文未確認</span>${s.quote?`<blockquote>${esc(s.quote)}</blockquote>`:''}<p class="subtle">${esc(s.scope)} · ${esc(s.speaker||'発言者未確認')} · ${esc(s.published_at||'公開日未確認')}<br>${date(s.received_at)}に記録 · 第${s.version}版</p><button class="quiet" data-edit-external="${s.id}">引用・出典を訂正</button><button class="quiet" data-delete-external="${s.id}">この外部資料を削除</button></div>`).join('')}
     <button id="add-external" class="quiet">URL・引用を残す</button><button id="start-research" class="quiet">この問いを公開資料で調べる</button>
     ${(c.research||[]).map(r=>`<div class="knowledge-item"><p>${esc(r.question)}</p><span class="origin">外部資料の調査 · ${esc(({pending:'検索待ち',running:'調査中',blocked:'設定・利用上限待ち',failed:'調査できませんでした',superseded:'更新前のメモへの調査',completed:'調査結果'})[r.state]||r.state)}</span>
       ${r.result?`<p>${esc(r.result.summary)}</p>${r.result.evidence.map(e=>`<p>${esc(e.text)} <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">出典</a><br><span class="subtle">${esc(sourceTypes[e.source_type])} · ${esc(e.speaker||'発言者未確認')} · ${esc(e.published_at||'公開日未確認')}<br>対象：${esc(e.scope)}<br>限界：${esc(e.limitations)} · 同一発言の扱い：${esc(e.independence_group)}</span></p>`).join('')}
-      ${r.result.alternatives.map(a=>`<p class="subtle">別解釈：${esc(a)}</p>`).join('')}${r.result.unanswered.map(a=>`<p class="subtle">未確認：${esc(a)}</p>`).join('')}
+      ${(r.result.connections||[]).map(x=>`<p class="subtle">既存の解釈への接続（${esc(x.kind)}）：${esc(x.reason)} · ${x.conditions.map(esc).join(' ／ ')}</p>`).join('')}${r.result.alternatives.map(a=>`<p class="subtle">別解釈：${esc(a)}</p>`).join('')}${r.result.unanswered.map(a=>`<p class="subtle">未確認：${esc(a)}</p>`).join('')}
       ${r.result.proposal?`<p>${esc(r.result.proposal.text)}</p><p class="subtle">${esc(r.result.proposal.reason)} · ${esc(r.result.proposal.limits)}</p>${r.adopted_revision?'<p class="subtle">この案は漫画観へ採用済みです。</p>':r.state==='completed'?`<button class="quiet" data-adopt-research="${r.id}">この外部根拠を踏まえた案に更新する</button>`:''}`:''}`:''}
-      ${r.search?`<details class="fold"><summary>検索時の回答と参照先</summary><p class="prose">${esc(r.search.text)}</p>${r.search.citations.map(s=>`<p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></p>`).join('')}<p class="subtle">${date(r.search.retrieved_at)}に取得</p></details>`:''}</div>`).join('')}</details>`;
+      ${['pending','running','blocked'].includes(r.state)?`<button class="quiet" data-cancel-research="${r.id}">この調査を止める</button>`:''}${r.state==='failed'?`<p class="subtle">検索結果を取得できなかった場合は、出典を作らず未確認のまま残します。</p><button class="quiet" data-retry-research="${r.id}">取得済みの結果から再試行</button>`:''}${r.search?`<details class="fold"><summary>検索時の回答と参照先</summary><p class="prose">${esc(r.search.text)}</p>${r.search.citations.map(s=>`<p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></p>`).join('')}<p class="subtle">${date(r.search.retrieved_at)}に取得</p></details>`:''}</div>`).join('')}</details>`;
 }
 function wireExternal(c){
   bind('#add-external','click',()=>{recordDialog(c);$('#capture-mode').value='external';$('#capture-mode').dispatchEvent(new Event('change'));});
+  document.querySelectorAll('[data-edit-external]').forEach(el=>el.addEventListener('click',()=>{
+    const s=c.external_sources.find(s=>s.id===el.dataset.editExternal);modal('外部資料を訂正',`<form id="external-edit"><label><span>URL</span><input id="source-url" value="${esc(s.url)}" required></label><label><span>資料名</span><input id="source-title-edit" value="${esc(s.title)}"></label><label><span>引用・抜き書き</span><textarea id="source-quote">${esc(s.quote)}</textarea></label><label><span>対象・文脈</span><input id="source-scope" value="${esc(s.scope)}" required></label><p id="source-error" class="error"></p><button class="primary">訂正を残す</button></form>`);
+    bind('#external-edit','submit',async e=>{e.preventDefault();try{await api(`/api/external-sources/${s.id}`,json('PATCH',{version:s.version,url:$('#source-url').value,title:$('#source-title-edit').value,quote:$('#source-quote').value,scope:$('#source-scope').value}));closeDialog();await openCapture(c.id);}catch(e){$('#source-error').textContent=e.message;}});
+  }));
+  document.querySelectorAll('[data-delete-external]').forEach(el=>el.addEventListener('click',()=>{
+    const s=c.external_sources.find(s=>s.id===el.dataset.deleteExternal);modal('この外部資料を削除',`<p>現在の資料一覧から削除します。訂正・削除の履歴と、漫画観の採用時の根拠は残ります。</p><button id="remove-source" class="primary">この資料を削除する</button>`);bind('#remove-source','click',async()=>{try{await api(`/api/external-sources/${s.id}`,json('DELETE',{version:s.version}));closeDialog();await openCapture(c.id);}catch(e){showNotice(e.message);}});
+  }));
+  for(const action of ['cancel','retry'])document.querySelectorAll(`[data-${action}-research]`).forEach(el=>el.addEventListener('click',async()=>{try{await api(`/api/research/${el.dataset[action+'Research']}/${action}`,json('POST',{}));await openCapture(c.id);}catch(e){showNotice(e.message);}}));
   bind('#start-research','click',()=>{
     modal('問いを公開資料で調べる',`<form id="research-form"><label><span>公開情報だけで表した、調べたい問い</span><textarea id="research-question" required maxlength="500">${esc(c.harvest?.questions[0]?.text||'')}</textarea></label><label><span>検討する漫画観（任意）</span><select id="research-view"><option value="">外部根拠だけ残す</option>${state.views.map(v=>`<option value="${v.id}">${esc(v.body.slice(0,100))}</option>`).join('')}</select></label><p class="subtle">この問いだけで外部検索します。写真や過去メモは検索先へ送りません。整理には選んだ漫画観をOpenAIへ送ります。1日3件、1件最大2回の検索。利用料金が発生します。</p><p id="research-error" class="error"></p><button class="primary">この問いで調べる</button></form>`);
     const key=crypto.randomUUID();bind('#research-form','submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;
@@ -428,7 +437,8 @@ async function renderGraph(captureId) {
   const g=await api(`/api/captures/${captureId}/graph`);if(!$('#graph-body')||currentCapture?.id!==captureId)return;
   const labels={claim:'根拠・解釈',concept:'概念',mechanism:'仕組み',question:'問い'},relationLabels={example_of:'例になっている',supports_interpretation:'解釈を支える',qualifies:'成立条件を加える',analogous_to:'似た構造',contrasts_with:'対照',evidence_for:'根拠になっている'};
   const nodes=g.nodes.map(n=>({...n,data:JSON.parse(n.data)})),name=n=>n?.data.name||n?.data.text||n?.data.expression||'記述';
-  $('#graph-body').innerHTML=nodes.length?`<p class="subtle">このメモの現在の分析だけを表示しています。</p>${nodes.map(n=>`<div class="graph-node"><span class="origin">${labels[n.kind]}</span><p>${esc(name(n))}</p>${n.concept_id?`<button class="quiet" data-concept="${n.concept_id}">同じ概念のメモ・別名・整理</button>`:''}</div>`).join('')}
+  $('#graph-body').innerHTML=nodes.length?`<p class="subtle">このメモの現在の分析だけを表示しています。</p>${nodes.map(n=>`<div class="graph-node"><span class="origin">${labels[n.kind]}</span><p>${esc(name(n))}</p>${n.concept_id?`<button class="quiet" data-concept="${n.effective_concept_id||n.concept_id}">同じ概念のメモ・別名・整理</button>`:''}</div>`).join('')}
+    ${(g.external||[]).map(r=>r.connections.map(x=>`<p class="graph-relation"><a href="${esc(x.source_url)}" target="_blank" rel="noopener noreferrer">外部根拠</a> → ${esc(relationLabels[x.kind])} → ${esc(name(nodes.find(n=>n.local_id===x.claim_id)))}<br><span class="subtle">${esc(x.reason)} · ${x.conditions.map(esc).join(' ／ ')}</span></p>`).join('')).join('')}
     ${g.relations.map(r=>{const d=JSON.parse(r.data);return `<p class="graph-relation">${esc(name(nodes.find(n=>n.id===r.from_id)))} → ${esc(relationLabels[r.kind]||r.kind)} → ${esc(name(nodes.find(n=>n.id===r.to_id)))}${d.reason?`<br><span class="subtle">${esc(d.reason)} ${(d.conditions||[]).map(esc).join(' ／ ')}</span>`:''}</p>`;}).join('')}`:'新しい分析ができると、ここに根拠とつながりを表示します。';
   document.querySelectorAll('[data-concept]').forEach(el=>el.addEventListener('click',()=>conceptDialog(el.dataset.concept).catch(e=>showNotice(e.message))));
 }
@@ -436,19 +446,24 @@ async function conceptDialog(conceptId) {
   const k=await api(`/api/concepts/${conceptId}`);
   modal(k.concept.name,`<p>${esc(k.concept.description)}</p>${k.aliases.length?`<p class="subtle">別名：${k.aliases.map(a=>esc(a.alias)).join(' ／ ')}</p>`:''}
     ${k.captures.map(c=>`<button class="capture-row" data-concept-record="${c.id}">${esc(c.source_title||'作品名なし')} · ${esc(c.result.summary)}</button>`).join('')}
-    <details class="fold"><summary>別名を足す・同じ意味の概念と統合する</summary><form id="concept-form"><label><span>整理の方法</span><select id="concept-kind"><option value="alias">別名を足す</option><option value="merge">同じ意味として統合する</option></select></label>
+    <details class="fold"><summary>別名を足す・同じ意味の概念と統合する</summary><form id="concept-form"><label><span>整理の方法</span><select id="concept-kind"><option value="alias">別名を足す</option><option value="merge">同じ意味として統合する</option><option value="split">一部のメモを別の意味に分ける</option></select></label>
     <label id="alias-label"><span>別名</span><input id="concept-alias" maxlength="200"></label><label id="merge-label" hidden><span>統合先（説明も確認してください）</span><select id="concept-target">${k.concepts.filter(v=>v.id!==k.canonical_id).map(v=>`<option value="${v.id}">${esc(v.name)} · ${esc(v.description)}</option>`).join('')}</select></label>
-    <label><span>理由</span><input id="concept-reason" required maxlength="2000"></label><p id="concept-error" class="error"></p><button class="quiet">整理を残す</button></form><p class="subtle">元の分析・写真・漫画観の履歴は残ります。</p></details>
-    <details class="fold"><summary>整理の履歴・統合を戻す</summary>${k.actions.filter(a=>a.data.concept_id===k.canonical_id||a.data.source_id===conceptId||a.data.target_id===k.canonical_id).map(a=>`<p>第${a.revision}版 · ${esc(a.reason)} ${a.undone?'（取り消し済み）':`<button class="quiet" data-undo-concept="${a.id}">この整理を戻す</button>`}</p>`).join('')}</details>`);
+    <div id="split-label" hidden><label><span>分ける概念の名前</span><input id="split-name" maxlength="200"></label><label><span>その意味を一言で</span><textarea id="split-description" maxlength="2000"></textarea></label>${k.captures.map(c=>`<label class="split-record"><input type="checkbox" data-split-record="${c.id}">${esc(c.result.summary)}</label>`).join('')}</div><label><span>理由</span><input id="concept-reason" required maxlength="2000"></label><p id="concept-error" class="error"></p><button class="quiet">整理を残す</button></form><p class="subtle">元の分析・写真・漫画観の履歴は残ります。</p></details>
+    <details class="fold"><summary>整理の履歴・統合を戻す</summary>${k.actions.filter(a=>a.data.concept_id===k.canonical_id||a.data.new_id===k.canonical_id||a.data.source_id===conceptId||a.data.target_id===k.canonical_id).map(a=>`<p>第${a.revision}版 · ${esc(a.reason)} ${a.undone?'（取り消し済み）':`<button class="quiet" data-undo-concept="${a.id}">この整理を戻す</button>`}</p>`).join('')}</details>`);
   document.querySelectorAll('[data-concept-record]').forEach(el=>el.addEventListener('click',()=>{closeDialog();openCapture(el.dataset.conceptRecord).catch(e=>showNotice(e.message));}));
-  bind('#concept-kind','change',()=>{$('#alias-label').hidden=$('#concept-kind').value!=='alias';$('#merge-label').hidden=$('#concept-kind').value!=='merge';});
-  bind('#concept-form','submit',async e=>{e.preventDefault();try{await api(`/api/concepts/${conceptId}`,json('POST',{kind:$('#concept-kind').value,revision:k.revision,alias:$('#concept-alias').value,target_id:$('#concept-target').value,reason:$('#concept-reason').value}));await conceptDialog(conceptId);}catch(e){$('#concept-error').textContent=e.message;}});
+  bind('#concept-kind','change',()=>{$('#alias-label').hidden=$('#concept-kind').value!=='alias';$('#merge-label').hidden=$('#concept-kind').value!=='merge';$('#split-label').hidden=$('#concept-kind').value!=='split';});
+  bind('#concept-form','submit',async e=>{e.preventDefault();try{await api(`/api/concepts/${conceptId}`,json('POST',{kind:$('#concept-kind').value,revision:k.revision,alias:$('#concept-alias').value,target_id:$('#concept-target').value,reason:$('#concept-reason').value,name:$('#split-name').value,description:$('#split-description').value,capture_ids:Array.from(document.querySelectorAll('[data-split-record]:checked')).map(e=>e.dataset.splitRecord)}));await conceptDialog(conceptId);}catch(e){$('#concept-error').textContent=e.message;}});
   document.querySelectorAll('[data-undo-concept]').forEach(el=>el.addEventListener('click',async()=>{try{await api(`/api/concepts/${conceptId}`,json('POST',{kind:'undo',revision:k.revision,action_id:el.dataset.undoConcept,reason:'本人がこの整理を取り消した。'}));await conceptDialog(conceptId);}catch(e){showNotice(e.message);}}));
 }
 
+function revisionEvidence(revision){
+  const refs=revision.references;
+  return `<details class="fold"><summary>採用時の根拠を読む</summary>${(refs.harvest_snapshot?.claims||[]).map(c=>`<p>${esc(c.text)}<br><span class="subtle">${esc(c.kind)} · ${c.conditions.map(esc).join(' ／ ')}</span></p>`).join('')}${(refs.external_snapshot?.evidence||[]).map(e=>`<p>${esc(e.text)} <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">外部出典</a><br><span class="subtle">${esc(e.scope)} · ${esc(e.limitations)}</span></p>`).join('')}<p class="subtle">採用時の記録第${refs.capture_version}版のスナップショットです。${revision.reference_state==='deleted'?'元のメモは削除済みです。':revision.reference_state==='changed'?'元のメモはその後、更新されています。':''}</p></details>`;
+}
 function privacyDialog() {
   modal('AIと保存について', `<div class="privacy"><p>残した写真・音声・文章は、このアプリの非公開データとして保存します。</p>
     <p>解析には、対象の写真・音声・文章と、比較に必要な過去の知見（直近24件まで）、概念（40件まで）、漫画観（12件まで）をOpenAIへ送ります。通常の記録ごとに確認操作はありません。</p>
+    <p>検索欄でEnterを押すと、意味の近い候補を探すため、検索文と直近30件までの記述をOpenAIへ送ります。外部調査を選ぶ場合は、その問いだけで公開検索を行い、整理の段階に限って選んだ漫画観・対象メモの知見を使います。</p>
     <p>AIが作るのは知見と見方の案です。「自分の漫画観にする」を選んだ文章だけが、本人の見方として残ります。</p>
     <p class="subtle">${state?.ai_configured ? 'AI解析は設定済みです。' : 'AI解析は未設定です。原資料を保存して待ちます。'}<br>今日の呼び出し ${state?.usage.calls || 0} / ${state?.daily_limit || '—'}（UTC日次）。音声は文字起こしと理解で通常2回。<br>解析は有料APIを使います。上限は呼び出し数で、金額上限ではありません。</p>
     <p class="subtle">削除は記録の詳細から。書き出しには元ファイルと履歴も含みます。</p></div>`);

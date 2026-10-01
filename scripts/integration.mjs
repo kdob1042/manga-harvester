@@ -13,9 +13,17 @@ const key=crypto.randomUUID(),form=()=>{const f=new FormData();f.append('file',n
 const first=await call('/api/captures',{method:'POST',headers:{'Idempotency-Key':key},body:form()});assert.equal(first.status,201);const saved=await first.json();
 const resend=await (await call('/api/captures',{method:'POST',headers:{'Idempotency-Key':key},body:form()})).json();assert.equal(resend.id,saved.id);
 const capture=await (await call(`/api/captures/${saved.id}`)).json();assert.equal(capture.assets.length,2);assert.equal(capture.note,'自作素材の余韻が面白い');assert.ok(capture.job);
+const state=await (await call('/api/state')).json();assert.match(state.instance_id,/^[a-f0-9]{32}$/);
 assert.equal((await call(`/api/assets/${capture.assets[0].id}`)).status,200);
 const search=await (await call('/api/state?q='+encodeURIComponent('余韻'))).json();assert.ok(search.captures.some(c=>c.id===saved.id));
 const exported=await (await call('/api/export')).json();assert.equal(exported.assets.find(a=>a.id===capture.assets[0].id).base64,png.toString('base64'));
+const source=await (await call('/api/external-sources',{...json('POST',{url:'https://example.com/test-fixture',quote:'検証用に自分で書いた抜き書き',scope:'検証用の公開資料レコード'}),headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()}})).json();
+assert.equal((await call(`/api/external-sources/${source.id}`,json('PATCH',{version:1,scope:'訂正した対象'}))).status,200);
+const external=await (await call(`/api/captures/${source.capture_id}`)).json();assert.equal(external.kind,'external');assert.equal(external.job,null);assert.equal(external.external_sources[0].version,2);
+const research=await (await call(`/api/captures/${source.capture_id}/research`,{...json('POST',{question:'検証用の公開の問い',version:1}),headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()}})).json();assert.ok(research.id);
+assert.equal((await call(`/api/research/${research.id}/cancel`,json('POST',{}))).status,200);
+assert.equal((await call(`/api/captures/${source.capture_id}`,json('DELETE',{version:1}))).status,200);
 assert.equal((await call(`/api/captures/${saved.id}`,json('DELETE',{version:1}))).status,200);assert.equal((await call(`/api/assets/${capture.assets[0].id}`)).status,404);
+assert.equal((await call('/api/captures',{method:'POST',headers:{'Idempotency-Key':key},body:form()})).status,410);
 await call('/api/logout',json('POST',{}));assert.equal((await call('/api/export')).status,401);
 console.log('workerd integration passed: auth, multi-photo/comment, durable job, idempotency, private R2, Japanese search, export, deletion, logout. Actual AI completion requires an API key.');

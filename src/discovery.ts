@@ -1,4 +1,4 @@
-import {stmt,rows,text,fail,id,now,type Harvest} from './core.ts';
+import {stmt,rows,text,fail,id,now,digest,type Harvest} from './core.ts';
 import {call,AiError} from './ai.ts';
 import {validate} from './harvest-contract.js';
 const normalize=(s:string)=>s.normalize('NFKC').toLocaleLowerCase('ja').replace(/[\s。、！？?!「」『』]/g,'');
@@ -10,7 +10,7 @@ function similarity(q:string,s:string){
 }
 export async function searchCaptures(env:Env,query:string){
  const records=await rows<{id:string;kind:string;version:number;created_at:number;source_title:string|null;source_certainty:string|null;source_inherited:number;state:string;error_code:string|null;result:string|null;original_text:string;note:string}>(env,`SELECT c.id,c.kind,c.version,c.created_at,c.original_text,c.note,c.source_inherited,s.title AS source_title,s.certainty AS source_certainty,j.state,j.error_code,h.result FROM captures c LEFT JOIN sources s ON s.id=c.source_id LEFT JOIN jobs j ON j.capture_id=c.id AND j.version=c.version LEFT JOIN harvests h ON h.capture_id=c.id AND h.version=c.version ORDER BY c.updated_at DESC LIMIT 500`);
- const aliases=await rows<{capture_id:string;alias:string}>(env,`SELECT DISTINCT g.capture_id,a.alias FROM nodes n JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version LEFT JOIN concept_mappings m ON m.source_id=n.concept_id JOIN concept_aliases a LEFT JOIN concept_mappings am ON am.source_id=a.concept_id WHERE coalesce(am.target_id,a.concept_id)=coalesce(m.target_id,n.concept_id)`);
+ const aliases=await rows<{capture_id:string;alias:string}>(env,`SELECT DISTINCT g.capture_id,a.alias FROM nodes n JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version LEFT JOIN concept_mappings m ON m.source_id=n.concept_id LEFT JOIN concept_scopes cs ON cs.capture_id=c.id AND cs.source_id=n.concept_id JOIN concept_aliases a LEFT JOIN concept_mappings am ON am.source_id=a.concept_id WHERE coalesce(am.target_id,a.concept_id)=coalesce(cs.concept_id,m.target_id,n.concept_id)`);
  return records.map(({result,original_text,note,...c})=>{
   const h=result?JSON.parse(result) as Harvest:null;
   const candidates:[string,string][]=[['本人の一言',`${original_text} ${note}`],['作品名',c.source_title||''],...aliases.filter(a=>a.capture_id===c.id).map(a=>['概念の別名',a.alias] as [string,string]),
@@ -48,7 +48,7 @@ export async function conceptDetail(env:Env,conceptId:string){
  const k=await stmt(env,'SELECT * FROM concepts WHERE id=?',conceptId).first<{id:string;name:string;description:string}>();if(!k)fail(404,'概念が見つかりません。');
  const m=await stmt(env,'SELECT target_id FROM concept_mappings WHERE source_id=?',conceptId).first<{target_id:string}>(),canonical=m?.target_id||conceptId;
  const [captures,aliases,concepts,revision,actions]=await Promise.all([
-  rows<{id:string;source_title:string|null;result:string}>(env,`SELECT DISTINCT c.id,s.title AS source_title,h.result FROM captures c JOIN generations g ON g.capture_id=c.id AND g.version=c.version JOIN nodes n ON n.generation_id=g.id LEFT JOIN concept_mappings m ON m.source_id=n.concept_id JOIN harvests h ON h.capture_id=c.id AND h.version=c.version LEFT JOIN sources s ON s.id=c.source_id WHERE coalesce(m.target_id,n.concept_id)=? ORDER BY c.created_at DESC LIMIT 30`,canonical),
+  rows<{id:string;source_title:string|null;result:string}>(env,`SELECT DISTINCT c.id,s.title AS source_title,h.result FROM captures c JOIN generations g ON g.capture_id=c.id AND g.version=c.version JOIN nodes n ON n.generation_id=g.id LEFT JOIN concept_mappings m ON m.source_id=n.concept_id LEFT JOIN concept_scopes cs ON cs.capture_id=c.id AND cs.source_id=n.concept_id JOIN harvests h ON h.capture_id=c.id AND h.version=c.version LEFT JOIN sources s ON s.id=c.source_id WHERE coalesce(cs.concept_id,m.target_id,n.concept_id)=? ORDER BY c.created_at DESC LIMIT 30`,canonical),
   rows<{alias:string}>(env,'SELECT a.alias FROM concept_aliases a LEFT JOIN concept_mappings m ON m.source_id=a.concept_id WHERE coalesce(m.target_id,a.concept_id)=?',canonical),rows<{id:string;name:string;description:string}>(env,'SELECT id,name,description FROM concepts WHERE id NOT IN(SELECT source_id FROM concept_mappings) LIMIT 100'),
   stmt(env,"SELECT value FROM settings WHERE key='concept_revision'").first<{value:string}>(),rows<{id:string;kind:string;revision:number;undone:number;reason:string;data:string}>(env,'SELECT * FROM concept_actions ORDER BY revision DESC LIMIT 10'),
  ]);return {concept:k,canonical_id:canonical,captures:captures.map(c=>({...c,result:JSON.parse(String(c.result))})),aliases,concepts,revision:Number(revision?.value||0),actions:actions.map(a=>({...a,data:JSON.parse(String(a.data))}))};
@@ -64,14 +64,28 @@ export async function organizeConcept(env:Env,conceptId:string,input:Record<stri
  }else if(kind==='merge'){
   const target=text(input.target_id,36);if(target===detail.canonical_id||detail.canonical_id!==conceptId)fail(400,'統合先を確認してください。');
   if(!detail.concepts.some(k=>k.id===target))fail(400,'統合先を確認してください。');
-  if(await stmt(env,'SELECT 1 FROM concept_mappings WHERE target_id=?',conceptId).first())fail(409,'この概念には統合済みの別概念があります。先にその統合を戻してください。');
+  if(await stmt(env,'SELECT 1 FROM concept_mappings WHERE target_id=? UNION SELECT 1 FROM concept_scopes WHERE concept_id=?',conceptId,conceptId).first())fail(409,'この概念は統合・分割の参照先になっています。先にその整理を戻してください。');
   data={source_id:conceptId,target_id:target};statements.push(stmt(env,`INSERT INTO concept_mappings SELECT ?,?,? WHERE ${guard}`,conceptId,target,action,String(base)));
+ }else if(kind==='split'){
+  const selected=Array.isArray(input.capture_ids)?input.capture_ids.map(v=>text(v,36)):[];
+  if(!selected.length||selected.length>30||selected.some(v=>!detail.captures.some(c=>c.id===v)))fail(400,'意味を分けるメモを選んでください。');
+  const name=text(input.name,200).trim(),description=text(input.description,2000).trim();if(!name||!description)fail(400,'分ける概念の名前と意味を残してください。');
+  const newId=id(),fingerprint=await digest(`${name}\n${description}\n${action}`),scopes: {capture_id:string;source_id:string}[]=[];
+  for(const captureId of selected){
+   const group=await rows<{source_id:string;assigned:string|null}>(env,`SELECT DISTINCT n.concept_id AS source_id,a.concept_id AS assigned FROM nodes n JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version LEFT JOIN concept_mappings m ON m.source_id=n.concept_id LEFT JOIN concept_scopes a ON a.capture_id=c.id AND a.source_id=n.concept_id WHERE c.id=? AND coalesce(a.concept_id,m.target_id,n.concept_id)=?`,captureId,detail.canonical_id);
+   if(group.some(g=>g.assigned))fail(409,'このメモはすでに意味を分けています。先にその分割を戻してください。');scopes.push(...group.map(g=>({capture_id:captureId,source_id:g.source_id})));
+  }
+  if(!scopes.length)fail(409,'メモが更新されています。開き直してください。');
+  data={concept_id:detail.canonical_id,new_id:newId,name,description,scopes};
+  statements.push(stmt(env,`INSERT INTO concepts SELECT ?,?,?,? WHERE ${guard}`,newId,name,description,fingerprint,String(base)));
+  for(const scope of scopes)statements.push(stmt(env,`INSERT INTO concept_scopes SELECT ?,?,?,? WHERE ${guard}`,scope.capture_id,scope.source_id,newId,action,String(base)));
  }else if(kind==='undo'){
   const prior=await stmt(env,'SELECT * FROM concept_actions WHERE id=? AND undone=0',text(input.action_id,36)).first<{id:string;kind:string;data:string}>();if(!prior)fail(409,'戻す整理が見つかりません。');
-  const old=JSON.parse(prior.data) as {source_id?:string;target_id?:string};
+  const old=JSON.parse(prior.data) as {source_id?:string;target_id?:string;new_id?:string};
   if(prior.kind==='merge'&&await stmt(env,'SELECT 1 FROM concept_mappings WHERE source_id=?',old.target_id!).first())fail(409,'統合先がさらに統合されています。新しい整理から戻してください。');
-  if(!['merge','alias'].includes(prior.kind))fail(400,'この操作は戻せません。');data={action_id:prior.id};
-  statements.push(stmt(env,`DELETE FROM concept_mappings WHERE action_id=? AND ${guard}`,prior.id,String(base)),stmt(env,`DELETE FROM concept_aliases WHERE action_id=? AND ${guard}`,prior.id,String(base)),stmt(env,`UPDATE concept_actions SET undone=1 WHERE id=? AND ${guard}`,prior.id,String(base)));
+  if(prior.kind==='split'&&await stmt(env,'SELECT 1 FROM concept_mappings WHERE target_id=?',old.new_id!).first())fail(409,'分けた概念に新しい統合があります。先にその統合を戻してください。');
+  if(!['merge','alias','split'].includes(prior.kind))fail(400,'この操作は戻せません。');data={action_id:prior.id};
+  statements.push(stmt(env,`DELETE FROM concept_mappings WHERE action_id=? AND ${guard}`,prior.id,String(base)),stmt(env,`DELETE FROM concept_scopes WHERE action_id=? AND ${guard}`,prior.id,String(base)),stmt(env,`DELETE FROM concept_aliases WHERE action_id=? AND ${guard}`,prior.id,String(base)),stmt(env,`UPDATE concept_actions SET undone=1 WHERE id=? AND ${guard}`,prior.id,String(base)));
  }else fail(400,'別名・統合・取り消しを選んでください。');
  const result=await env.DB.batch([
   stmt(env,`INSERT INTO concept_actions SELECT ?,?,?,?,?,?,0 WHERE ${guard}`,action,base+1,kind,JSON.stringify(data),reason,now(),String(base)),...statements,

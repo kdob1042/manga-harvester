@@ -31,6 +31,7 @@ import WebKit
         monitor.start(queue: DispatchQueue(label: "manga.connectivity"))
     }
     func refresh() { do { pending = try CaptureStore.entries() } catch { status = error.localizedDescription } }
+    func retry(_ capture: NativeCapture) async { do { var updated = capture; updated.error = nil; try CaptureStore.update(updated); refresh(); await sync() } catch { status = error.localizedDescription } }
     func connect(origin: String, password: String) async {
         busy = true; defer { busy = false }
         do {
@@ -62,7 +63,7 @@ import WebKit
             CaptureStore.preferences.set(true, forKey: "device_authorized")
             CaptureStore.preferences.set(instance, forKey: "instance_id")
             for var entry in try CaptureStore.entries() {
-                guard entry.instance_id == instance, entry.origin == api.origin.absoluteString, entry.error == nil else { continue }
+                guard entry.instance_id == instance, entry.origin == api.origin.absoluteString, entry.error == nil, entry.draft != true else { continue }
                 do { try await api.upload(entry); try CaptureStore.remove(entry); status = "サーバーへ保存しました。分析はあとで読めます。" }
                 catch let error as ServerFailure {
                     if error.status == 401 { authenticated = false; CaptureStore.preferences.set(false, forKey: "device_authorized"); throw error }
@@ -72,6 +73,8 @@ import WebKit
             }
         } catch let error as ServerFailure {
             if error.status == 401 { authenticated = false; CaptureStore.preferences.set(false, forKey: "device_authorized") }
+            status = error.localizedDescription
+        } catch let error as CaptureFailure {
             status = error.localizedDescription
         } catch {
             status = pending.isEmpty ? "接続を確認してください。" : "端末内に保存済みです。接続後に送信します。"

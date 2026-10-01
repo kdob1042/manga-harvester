@@ -35,6 +35,14 @@ const server=createServer(async(req,res)=>{
 await new Promise(resolve=>server.listen(8793,'127.0.0.1',resolve));
 const browser=await chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE,args:['--no-sandbox','--disable-dev-shm-usage','--no-zygote','--single-process','--in-process-gpu','--use-gl=angle','--use-angle=swiftshader','--ignore-gpu-blocklist']}:{})});
 const errors=[];
+const realFetch=globalThis.fetch;
+globalThis.fetch=async(url,init)=>{
+ if(String(url).startsWith('https://api.openai.com/')){
+  const body=JSON.parse(init.body);if(body.text?.format?.name!=='manga_search_v1')throw new Error('Unexpected outbound API in browser QA');
+  const c=JSON.parse(body.input).candidates[0];return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({matches:[{capture_id:c.id,version:c.version,node_id:'c2',reason:'待たせる体験と、反応の先行提示が関連する',quote:'対象への疑問が生まれる'}]})}]}]});
+ }
+ return realFetch(url,init);
+};
 try{
  await mkdir('artifacts',{recursive:true});
  const page=await browser.newPage({viewport:{width:390,height:844}});page.on('pageerror',e=>errors.push(e.message));
@@ -96,6 +104,15 @@ try{
  await page.locator('#research-view').selectOption({index:1});await page.locator('#research-form button').click();await expect(page.getByRole('dialog')).not.toBeVisible();
  await page.reload();await page.locator('.capture-row').first().click();await page.locator('#external-materials summary').first().click();
  await expect(page.locator('[data-adopt-research]')).toBeVisible();await page.locator('[data-adopt-research]').click();await expect(page.getByText('自分の漫画観 · 第4版',{exact:true})).toBeVisible();
+ await page.locator('#back').click();await page.locator('.menu summary').click();await page.locator('#search').fill('先が知りたくて待たされる');await page.locator('#search').press('Enter');
+ await expect(page.getByText(/AIによる関連づけ：待たせる体験/)).toBeVisible();await page.locator('.capture-row').first().click();await expect(page.locator('.photo-strip img')).toHaveCount(1);await page.locator('#back').click();
+ // Continue with the unselected photo from the same archive.
+ await page.locator('.menu summary').click();await page.locator('#search').fill('');await page.locator('#search').press('Tab');await page.waitForTimeout(400);await page.locator('.menu summary').click();
+ await page.getByRole('button',{name:'取り込む'}).click();await page.locator('#capture-mode').selectOption('import');
+ await page.locator('[data-resume-import]').filter({hasText:'photos.cbz'}).click();await expect(page.locator('.import-grid img')).toHaveCount(2);
+ await expect(page.locator('[data-import-key]').first()).toBeDisabled();await page.locator('[data-import-key]').last().check();await page.locator('#save-import').click();await expect(page.getByRole('dialog')).not.toBeVisible();
+ await page.reload();await expect(page.locator('.capture-row')).toHaveCount(7);await page.locator('.capture-row').first().click();
+ await expect(page.locator('.photo-strip img')).toHaveCount(1);await page.getByText('原資料・訂正など',{exact:true}).click();await expect(page.getByText(/取り込み元：photos.cbz/)).toBeVisible();
  if(errors.length)throw new Error(errors.join('\n'));
  console.log('Browser QA passed: 390/1280px, one primary action, multi-photo + comment, paste, save/reload, original images, comparison, adoption/edit/history, microphone fallback, no overflow.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));f.sqlite.close();}

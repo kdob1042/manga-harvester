@@ -2,6 +2,7 @@ import {localGet,localAll,localPut,localDelete,clearLocal} from './local.js';
 const MAX=80*1024*1024;
 let syncing=false;
 export async function rememberState(state){
+ if(typeof state.instance_id!=='string'||!/^[a-f0-9]{32}$/.test(state.instance_id))throw Object.assign(new Error('保存先の識別情報を確認できません。接続して画面を開き直してください。'),{status:503});
  const prior=await localGet('meta','session');
  if(prior&&prior.instance_id!==state.instance_id){
   if((await localAll('outbox')).length)throw Object.assign(new Error('保存待ちのデータは別の保存先のものです。端末内の書き出し・削除をしてから開き直してください。'),{status:409});
@@ -20,7 +21,7 @@ export async function queueUpload(pending){
 }
 export async function sendUpload(pending,send){
  const headers={'Idempotency-Key':pending.key};let body;
- if(pending.files.length){body=new FormData();pending.files.forEach(f=>body.append('file',f,f.name||'original'));body.set('note',pending.note);}
+ if(pending.files.length){body=new FormData();pending.files.forEach(f=>body.append('file',f,f.name||'original'));body.set('note',pending.note);if(pending.import_receipt)body.set('import_receipt',JSON.stringify(pending.import_receipt));}
  else{headers['Content-Type']='application/json';body=JSON.stringify({text:pending.text,note:pending.note});}
  if(pending.target)headers['X-Capture-Version']=String(pending.target.version);
  return send(pending.target?`/api/captures/${pending.target.id}/assets`:'/api/captures',{method:'POST',headers,body});

@@ -1,7 +1,8 @@
 import {boundedBody,digest,text,fail,HttpError} from './core.ts';
 export const MAX_UPLOAD=8*1024*1024, MAX_SCENE=20*1024*1024, MAX_ASSETS=8;
 export type InputAsset={bytes:Uint8Array;mime:string;name:string};
-export type Input={text:string;note:string;assets:InputAsset[];hash:string};
+export type ImportReceipt={source_hash:string;source_name:string;source_size:number;format:'pdf'|'zip';conversion_keys:string[]};
+export type Input={text:string;note:string;assets:InputAsset[];hash:string;import_receipt?:ImportReceipt};
 export function requestKey(request:Request){const key=request.headers.get('idempotency-key');if(!key||!/^[a-zA-Z0-9_-]{16,100}$/.test(key))fail(400,'保存操作を確認できません。');return key;}
 export function sniff(bytes:Uint8Array):[string,string]|null{
  const ascii=(a:number,b:number)=>new TextDecoder().decode(bytes.slice(a,b)),match=(a:number[])=>a.every((n,i)=>bytes[i]===n);
@@ -35,9 +36,14 @@ export async function captureInput(request:Request):Promise<Input>{
    assets.push({bytes:data,mime:detected[0],name:`original.${detected[1]}`});
   }
   input={text:text(form.get('text')||''),note:text(form.get('note')||''),assets};
+  if(form.has('import_receipt')){
+   let receipt:ImportReceipt;try{receipt=JSON.parse(text(form.get('import_receipt'),10000));}catch{fail(400,'取り込み元の情報を確認してください。');}
+   if(!receipt||Object.keys(receipt).some(k=>!['source_hash','source_name','source_size','format','conversion_keys'].includes(k))||!['pdf','zip'].includes(receipt.format)||!/^[a-f0-9]{64}$/.test(receipt.source_hash)||!Number.isInteger(receipt.source_size)||receipt.source_size<1||receipt.source_size>25*1024*1024||!Array.isArray(receipt.conversion_keys)||receipt.conversion_keys.length!==assets.length||new Set(receipt.conversion_keys).size!==assets.length||assets.some(a=>!a.mime.startsWith('image/')))fail(400,'取り込み元の情報を確認してください。');
+   text(receipt.source_name,500);receipt.conversion_keys.forEach(k=>text(k,1000));input.import_receipt=receipt;
+  }
  }
  const hashes=await Promise.all(input.assets.map(async a=>[a.mime,await digest(a.bytes)]));
- return {...input,hash:await digest(JSON.stringify({text:input.text,note:input.note,assets:hashes}))};
+ return {...input,hash:await digest(JSON.stringify({text:input.text,note:input.note,assets:hashes,import_receipt:input.import_receipt}))};
 }
 export async function stageAssets(env:Env,key:string,input:Input){
  const keys:string[]=[];

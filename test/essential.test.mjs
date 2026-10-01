@@ -61,6 +61,7 @@ test('API auth protects originals and export; source deletion retains adopted vi
  assert.equal((await worker.fetch(request('/api/export'),env,ctx)).status,401);
  const login=await worker.fetch(request('/api/login','POST',{password:env.APP_PASSWORD}),env,ctx);assert.equal(login.status,200);
  const cookie=login.headers.get('set-cookie').split(';')[0],headers={Cookie:cookie};
+ const state=await (await worker.fetch(request('/api/state','GET',undefined,headers),env,ctx)).json();assert.match(state.instance_id,/^[a-f0-9]{32}$/);
  assert.equal((await worker.fetch(request(`/api/assets/${c.assets[0].id}`,'GET',undefined,headers),env,ctx)).status,200);
  const foreign=request('/api/captures','POST',{text:'attack'},{...headers,Origin:'https://other.invalid','Idempotency-Key':crypto.randomUUID()});assert.equal((await worker.fetch(foreign,env,ctx)).status,403);
  await processJob(env,c.job.id,provider(x=>fixture(x.asset_labels[0].id)));const ready=await getCapture(env,c.id);

@@ -62,7 +62,8 @@ struct CaptureScreen: View {
                         ForEach(model.pending) { capture in
                             VStack(alignment: .leading) {
                                 Text(capture.note.isEmpty ? capture.text ?? "写真・音声" : capture.note)
-                                if let error = capture.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                                if capture.draft == true { Text("撮影途中 · \(capture.files.count)枚").font(.caption); Button("この写真群を残す") { do { try CaptureStore.finishDraft(capture); model.refresh(); Task { await model.sync() } } catch { model.status = error.localizedDescription } } }
+                                if let error = capture.error { Text(error).font(.caption).foregroundStyle(.secondary); Button("送信条件を確認して再試行") { Task { await model.retry(capture) } } }
                                 HStack {
                                     if let url = try? CaptureStore.export(capture) { ShareLink("原資料を書き出す", item: url) }
                                     Button("端末から削除", role: .destructive) { deleting = capture }
@@ -91,10 +92,7 @@ struct CaptureScreen: View {
                     } catch { model.status = error.localizedDescription }
                 } }
             }
-            .sheet(isPresented: $camera) { CameraCapture { image in
-                camera = false
-                Task { do { guard let bytes = image.jpegData(compressionQuality: 0.9) else { throw CaptureFailure.message("写真を保存できませんでした。") }; if await model.save(files: [try CaptureStore.image(bytes, index: 1)], note: note) { note = "" } } catch { model.status = error.localizedDescription } }
-            } }
+            .sheet(isPresented: $camera, onDismiss: { model.refresh() }) { CameraCapture(note: note) { camera = false; note = ""; model.refresh(); Task { await model.sync() } } }
             .sheet(isPresented: $web) { if let client = model.client { NavigationStack { ReadWeb(origin: client.origin).toolbar { ToolbarItem { Button("戻る") { web = false; Task { await model.sync() } } } } } } }
             .alert("この端末の原資料を削除しますか？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
                 Button("削除", role: .destructive) { if let capture = deleting { do { try CaptureStore.remove(capture); model.refresh() } catch { model.status = error.localizedDescription } }; deleting = nil }
@@ -104,14 +102,46 @@ struct CaptureScreen: View {
     }
 }
 struct CameraCapture: UIViewControllerRepresentable {
-    let saved: (UIImage) -> Void
+    let note: String
+    let saved: () -> Void
     @Environment(\.dismiss) private var dismiss
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeUIViewController(context: Context) -> UIImagePickerController { let picker = UIImagePickerController(); picker.sourceType = .camera; picker.delegate = context.coordinator; return picker }
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController(); picker.sourceType = .camera; picker.showsCameraControls = false; picker.delegate = context.coordinator
+        context.coordinator.picker = picker; picker.cameraOverlayView = context.coordinator.controls(); return picker
+    }
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
     final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: CameraCapture; init(_ parent: CameraCapture) { self.parent = parent }
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) { if let image = info[.originalImage] as? UIImage { parent.saved(image) } }
+        weak var picker: UIImagePickerController?
+        private var draft: NativeCapture?
+        private let count = UILabel()
+        private let shutter = UIButton(type: .system)
+        private let finish = UIButton(type: .system)
+        func controls() -> UIView {
+            let overlay = UIView(frame: UIScreen.main.bounds), stack = UIStackView(); stack.axis = .vertical; stack.spacing = 10; stack.translatesAutoresizingMaskIntoConstraints = false
+            count.text = "写真を撮る · 8枚まで"; count.textAlignment = .center; count.textColor = .white
+            shutter.setTitle("撮る", for: .normal); shutter.backgroundColor = .systemBlue; shutter.setTitleColor(.white, for: .normal); shutter.layer.cornerRadius = 12; shutter.addTarget(self, action: #selector(shoot), for: .touchUpInside)
+            finish.setTitle("この写真群を残す", for: .normal); finish.isEnabled = false; finish.backgroundColor = .white; finish.layer.cornerRadius = 12; finish.addTarget(self, action: #selector(done), for: .touchUpInside)
+            let back = UIButton(type: .system); back.setTitle("中断して戻る", for: .normal); back.setTitleColor(.white, for: .normal); back.addTarget(self, action: #selector(pause), for: .touchUpInside)
+            [count, shutter, finish, back].forEach { stack.addArrangedSubview($0) }; overlay.addSubview(stack)
+            NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 24), stack.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -24), stack.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -50), shutter.heightAnchor.constraint(equalToConstant: 52), finish.heightAnchor.constraint(equalToConstant: 44)])
+            return overlay
+        }
+        @objc private func shoot() { shutter.isEnabled = false; picker?.takePicture() }
+        @objc private func pause() { parent.dismiss() } // Durable draft remains recoverable in the record list.
+        @objc private func done() { do { if let draft { try CaptureStore.finishDraft(draft); parent.saved() } } catch { show(error) } }
+        private func show(_ error: Error) { let alert = UIAlertController(title: "写真を保存できませんでした", message: error.localizedDescription, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "戻る", style: .cancel)); picker?.present(alert, animated: true) }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            defer { shutter.isEnabled = (draft?.files.count ?? 0) < 8 }
+            do {
+                guard let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.9) else { throw CaptureFailure.message("写真を読み取れませんでした。") }
+                let file = try CaptureStore.image(data, index: (draft?.files.count ?? 0) + 1)
+                if let existing = draft { draft = try CaptureStore.appendDraft(existing, file: file) }
+                else { draft = try CaptureStore.stage(files: [file], note: parent.note, draft: true) }
+                count.text = "端末内に保存 · \(draft!.files.count)枚"; finish.isEnabled = true
+            } catch { show(error) }
+        }
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
     }
 }

@@ -38,6 +38,7 @@ private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
         return instance
     }
     func upload(_ capture: NativeCapture) async throws {
+        guard capture.draft != true else { throw CaptureFailure.message("撮影途中の写真群は、残す操作が終わるまで送信しません。") }
         guard capture.origin == origin.absoluteString else { throw CaptureFailure.message("この送信待ちは別の保存先のものです。書き出してから設定を確認してください。") }
         if let url = capture.external_url {
             _ = try await send(path: "api/external-sources", method: "POST", body: JSONSerialization.data(withJSONObject: ["url": url, "quote": capture.text ?? "", "scope": capture.note.isEmpty ? "共有された公開資料。対象の文脈は未確認。" : capture.note]), key: capture.key)

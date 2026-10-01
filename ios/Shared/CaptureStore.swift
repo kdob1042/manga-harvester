@@ -15,11 +15,12 @@ struct NativeCapture: Codable, Identifiable {
     let instance_id: String
     let origin: String
     let created_at: Double
-    let files: [LocalFile]
+    var files: [LocalFile]
     let text: String?
     let note: String
     let external_url: String?
     var error: String?
+    var draft: Bool?
 }
 
 enum CaptureStore {
@@ -44,7 +45,7 @@ enum CaptureStore {
         try JSONEncoder().encode(capture).write(to: directory(capture).appendingPathComponent("record.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
     static func remove(_ capture: NativeCapture) throws { try FileManager.default.removeItem(at: directory(capture)) }
-    static func stage(files: [(Data, String, String)] = [], text: String? = nil, note: String = "", externalURL: String? = nil) throws -> NativeCapture {
+    static func stage(files: [(Data, String, String)] = [], text: String? = nil, note: String = "", externalURL: String? = nil, draft: Bool = false) throws -> NativeCapture {
         guard preferences.bool(forKey: "device_authorized"), let instance = preferences.string(forKey: "instance_id"), let origin = preferences.string(forKey: "origin"), !instance.isEmpty else {
             throw CaptureFailure.message("アプリで一度ログインしてから、撮影・共有してください。")
         }
@@ -57,7 +58,7 @@ enum CaptureStore {
         }
         let key = UUID().uuidString.lowercased()
         let capture = NativeCapture(format: "manga-capture-outbox/v1", id: key, key: key, instance_id: instance, origin: origin, created_at: Date().timeIntervalSince1970 * 1000,
-            files: files.map { LocalFile(name: $0.1, mime: $0.2, size: $0.0.count) }, text: text, note: note, external_url: externalURL, error: nil)
+            files: files.map { LocalFile(name: $0.1, mime: $0.2, size: $0.0.count) }, text: text, note: note, external_url: externalURL, error: nil, draft: draft)
         let folder = try directory(capture)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         do {
@@ -67,6 +68,13 @@ enum CaptureStore {
             return capture
         } catch { try? FileManager.default.removeItem(at: folder); throw error }
     }
+    static func appendDraft(_ capture: NativeCapture, file: (Data, String, String)) throws -> NativeCapture {
+        guard capture.draft == true, capture.files.count < 8, file.0.count <= 8 * 1024 * 1024, capture.files.reduce(0, { $0 + $1.size }) + file.0.count <= 20 * 1024 * 1024,
+              try entries().flatMap(\.files).reduce(0, { $0 + $1.size }) + file.0.count <= 80 * 1024 * 1024 else { throw CaptureFailure.message("撮影は8枚・合計20MBまで、端末内は80MBまでです。いまの写真群を残してください。") }
+        var updated = capture; updated.files.append(LocalFile(name: file.1, mime: file.2, size: file.0.count))
+        try file.0.write(to: directory(capture).appendingPathComponent(file.1), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]); try update(updated); return updated
+    }
+    static func finishDraft(_ capture: NativeCapture) throws { var complete = capture; complete.draft = false; try update(complete) }
     static func image(_ data: Data, index: Int) throws -> (Data, String, String) {
         guard data.count <= 25 * 1024 * 1024, let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],

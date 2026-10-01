@@ -47,16 +47,16 @@ export async function rows<T>(env:Env, sql:string, ...values:(string|number|null
 export async function getCapture(env:Env, captureId:string) {
  const capture=await stmt(env,`SELECT c.*,s.title AS source_title,s.certainty AS source_certainty FROM captures c LEFT JOIN sources s ON s.id=c.source_id WHERE c.id=?`,captureId).first<Capture>();
  if (!capture) return null;
- const [job,h,assets,views,comparisons,proposals,external_sources,research]=await Promise.all([
+ const [job,h,assets,views,comparisons,proposals,external_sources,research,imports]=await Promise.all([
   stmt(env,'SELECT * FROM jobs WHERE capture_id=? AND version=?',captureId,capture.version).first<Job>(),
   stmt(env,'SELECT result,version FROM harvests WHERE capture_id=? AND version<=? ORDER BY version DESC LIMIT 1',captureId,capture.version).first<{result:string;version:number}>(),
   rows<Asset>(env,'SELECT * FROM assets WHERE capture_id=? ORDER BY upload_index,created_at',captureId),
   rows<View>(env,'SELECT * FROM views WHERE capture_id=? ORDER BY created_at',captureId),
   rows<{id:string;data:string;target_id:string;target_version:number;target_current_version:number;target_title:string|null}>(env,`SELECT x.id,x.data,t.capture_id AS target_id,t.version AS target_version,c.version AS target_current_version,s.title AS target_title FROM comparisons x JOIN generations g ON g.id=x.generation_id JOIN generations t ON t.id=x.target_generation_id JOIN captures c ON c.id=t.capture_id LEFT JOIN sources s ON s.id=c.source_id WHERE g.capture_id=? AND g.version=?`,captureId,capture.version),
   rows<{id:string;data:string;view_id:string|null;base_revision:number|null;adopted_view_id:string|null}>(env,`SELECT p.* FROM proposals p JOIN generations g ON g.id=p.generation_id WHERE g.capture_id=? AND g.version=?`,captureId,capture.version),
-  rows(env,'SELECT * FROM external_sources WHERE capture_id=? ORDER BY received_at DESC',captureId),researchFor(env,captureId),
+  rows(env,'SELECT * FROM external_sources WHERE capture_id=? ORDER BY received_at DESC',captureId),researchFor(env,captureId),rows(env,`SELECT i.*,a.asset_id,a.conversion_key FROM capture_imports i JOIN import_assets a ON a.import_id=i.id WHERE i.capture_id=?`,captureId),
  ]);
- return {...capture,job,external_sources,research,harvest:h?JSON.parse(h.result) as Harvest:null,harvest_version:h?.version||null,assets,views,comparisons:comparisons.map(c=>({...c,data:JSON.parse(c.data)})),proposals:proposals.map(p=>({...p,data:JSON.parse(p.data)}))};
+ return {...capture,job,external_sources,research,imports,harvest:h?JSON.parse(h.result) as Harvest:null,harvest_version:h?.version||null,assets,views,comparisons:comparisons.map(c=>({...c,data:JSON.parse(c.data)})),proposals:proposals.map(p=>({...p,data:JSON.parse(p.data)}))};
 }
 export const jobStatement = (env:Env,captureId:string,revision:number,mutation:string) => stmt(env,`INSERT INTO jobs(id,capture_id,version,available_at,created_at)
  SELECT ?,id,version,?,? FROM captures WHERE id=? AND version=? AND mutation_id=?`,id(),now(),now(),captureId,revision,mutation);

@@ -2,6 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {runtime,imageRequest,fixture,provider} from './runtime.mjs';
 import {saveCapture} from '../src/mutations.ts';import {getCapture} from '../src/core.ts';import {processJob} from '../src/queue.ts';
 import {searchCaptures,semanticSearch,conceptDetail,organizeConcept} from '../src/discovery.ts';
+import {graphFor} from '../src/graph.ts';
 test('search explains matching text and concept organization preserves original evidence with reversible aliases and merges',async()=>{
  const {env,sqlite}=runtime(),{id}=await (await saveCapture(imageRequest('この間が好き'),env)).json(),c=await getCapture(env,id);
  await processJob(env,c.job.id,provider(x=>fixture(x.asset_labels[0].id,x.user_note)));
@@ -15,6 +16,16 @@ test('search explains matching text and concept organization preserves original 
  const detail=await conceptDetail(env,concept);assert.equal(detail.canonical_id,target);assert.equal(detail.captures[0].id,id);
  await organizeConcept(env,concept,{kind:'undo',revision:2,action_id:detail.actions[0].id,reason:'意味を分けて考える'});
  assert.equal((await conceptDetail(env,concept)).canonical_id,concept);assert.equal(sqlite.prepare('SELECT result FROM harvests').get().result,before);
+});
+test('splitting a concept scopes selected records, preserves their original nodes, and can be undone',async()=>{
+ const {env,sqlite}=runtime();const ids=[];
+ for(let n=0;n<2;n++){const {id}=await (await saveCapture(imageRequest(),env)).json(),c=await getCapture(env,id);await processJob(env,c.job.id,provider(x=>fixture(x.asset_labels[0].id)));ids.push(id);}
+ const concept=sqlite.prepare('SELECT id FROM concepts').get().id;
+ await organizeConcept(env,concept,{kind:'split',revision:0,capture_ids:[ids[0]],name:'緊張を保留する反応',description:'不安な対象への期待を保留する表現。',reason:'笑いを作る表現とは意味を分けたい。'});
+ const g=await graphFor(env,ids[0]),node=g.nodes.find(n=>n.kind==='concept');assert.equal(node.concept_id,concept);assert.notEqual(node.effective_concept_id,concept);
+ assert.equal((await conceptDetail(env,node.effective_concept_id)).captures[0].id,ids[0]);assert.equal((await conceptDetail(env,concept)).captures[0].id,ids[1]);
+ const change=(await conceptDetail(env,concept)).actions[0];await organizeConcept(env,concept,{kind:'undo',revision:1,action_id:change.id,reason:'分ける条件を考え直す。'});
+ assert.equal((await conceptDetail(env,concept)).captures.length,2);assert.equal((await graphFor(env,ids[0])).nodes.find(n=>n.kind==='concept').effective_concept_id,concept);
 });
 test('meaning search returns only existing versions and exact excerpts, with no external search or original image upload',async()=>{
  const {env}=runtime(),{id}=await (await saveCapture(imageRequest('この反応が好き'),env)).json(),c=await getCapture(env,id);await processJob(env,c.job.id,provider(x=>fixture(x.asset_labels[0].id,x.user_note)));

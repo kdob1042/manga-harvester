@@ -22,9 +22,10 @@ async function imageThumbnail(blob){
   canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);return canvasBlob(canvas,.7);
  }finally{image.close();}
 }
-async function pdfDocument(file){
+async function pdfDocument(file,signal){
  const pdf=await import('/vendor/pdf.mjs');pdf.GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
- return pdf.getDocument({data:new Uint8Array(await file.arrayBuffer()),isEvalSupported:false,enableXfa:false,cMapUrl:'/vendor/cmaps/',cMapPacked:true,standardFontDataUrl:'/vendor/standard_fonts/',wasmUrl:'/vendor/wasm/'}).promise;
+ const task=pdf.getDocument({data:new Uint8Array(await file.arrayBuffer()),isEvalSupported:false,enableXfa:false,cMapUrl:'/vendor/cmaps/',cMapPacked:true,standardFontDataUrl:'/vendor/standard_fonts/',wasmUrl:'/vendor/wasm/'});
+ signal?.addEventListener('abort',()=>task.destroy().catch(()=>{}),{once:true});if(signal?.aborted){await task.destroy();throw new DOMException('Aborted','AbortError');}return task.promise;
 }
 async function pdfImage(doc,index,max){
  const item=await doc.getPage(index+1),base=item.getViewport({scale:1}),scale=Math.min(2,max/Math.max(base.width,base.height)),viewport=item.getViewport({scale});
@@ -41,11 +42,11 @@ export async function openImport(file,onProgress=()=>{},signal){
  if(used+file.size>80*MB)throw new Error('端末内の取り込み待ちが80MBを超えます。先に残している候補を取り込むか、削除してください。');
  const isPdf=new TextDecoder().decode(bytes.slice(0,5))==='%PDF-',isZip=bytes[0]===80&&bytes[1]===75;
  if(!isPdf&&!isZip)throw new Error('PDF・ZIP/CBZを選んでください。');
- const doc=isPdf?await pdfDocument(file):null,zip=isZip?await import('/vendor/fflate.mjs'):null;
+ const doc=isPdf?await pdfDocument(file,signal):null,zip=isZip?await import('/vendor/fflate.mjs'):null;
  let entries;
  try{entries=doc?Array.from({length:doc.numPages},(_,i)=>({key:String(i)})):archiveImages(zip.unzipSync,bytes);
   if(entries.length>limits.count)throw new Error('候補は120点までです。必要な部分だけのPDFに分けてください。');
-  job=job||{id:hash,file,kind:isPdf?'pdf':'zip',status:'converting',items:entries.map(e=>({...e,thumbnail:null,error:null})),selected:[],request_key:crypto.randomUUID(),created_at:Date.now()};
+  job=job||{id:hash,file,kind:isPdf?'pdf':'zip',status:'converting',items:entries.map(e=>({...e,thumbnail:null,error:null})),selected:[],imported:[],request_key:crypto.randomUUID(),created_at:Date.now()};
   await localPut('imports',job);
   for(let i=0;i<job.items.length;i++){
    if(signal?.aborted)throw new DOMException('Aborted','AbortError');
@@ -60,15 +61,16 @@ export async function openImport(file,onProgress=()=>{},signal){
  }finally{await doc?.loadingTask.destroy();}
 }
 export async function selectImport(job,selected){
+ if(selected.some(key=>(job.imported||[]).some(i=>i.key===key)))throw new Error('取り込み済みの画像です。残りの候補を選んでください。');
  if(selected.length>8)throw new Error('一つのメモは8枚までです。');
  job.selected=selected;await localPut('imports',job);
 }
-export async function importFiles(job){
+export async function importFiles(job,signal){
  if(!job.selected.length||job.selected.length>8)throw new Error('残したい写真を1〜8枚選んでください。');
- const doc=job.kind==='pdf'?await pdfDocument(job.file):null,zip=doc?null:await import('/vendor/fflate.mjs'),bytes=doc?null:new Uint8Array(await job.file.arrayBuffer());
+ const doc=job.kind==='pdf'?await pdfDocument(job.file,signal):null,zip=doc?null:await import('/vendor/fflate.mjs'),bytes=doc?null:new Uint8Array(await job.file.arrayBuffer());
  try{
   const files=[];let total=0;
-  for(const key of job.selected){const i=job.items.findIndex(e=>e.key===key);if(i<0)throw new Error('選択した画像が見つかりません。');
+  for(const key of job.selected){if(signal?.aborted)throw new DOMException('Aborted','AbortError');const i=job.items.findIndex(e=>e.key===key);if(i<0)throw new Error('選択した画像が見つかりません。');
    const blob=doc?await pdfImage(doc,i,2200):new Blob([zip.unzipSync(bytes,{filter:e=>e.name===key})[key]]);
    if(!blob.size||blob.size>8*MB||(total+=blob.size)>20*MB)throw new Error('選んだ画像は1枚8MB・合計20MBまでです。枚数を減らしてください。');
    const ext=doc?'jpg':key.split('.').pop().toLowerCase(),mime=ext==='png'?'image/png':ext==='webp'?'image/webp':'image/jpeg';
@@ -76,6 +78,11 @@ export async function importFiles(job){
   }return files;
  }finally{await doc?.loadingTask.destroy();}
 }
-export async function finishImport(job){job.status='completed';job.file=new Blob();job.items=[];await localPut('imports',job);}
+export async function finishImport(job,receipt,captureId){
+ job.imported=[...new Map([...(job.imported||[]),...receipt.conversion_keys.map(key=>({key,capture_id:captureId||null}))].map(item=>[item.key,item])).values()];job.selected=[];job.request_key=crypto.randomUUID();
+ if(job.items.every(i=>job.imported.some(x=>x.key===i.key))){job.status='completed';job.source_name=job.source_name||job.file.name;job.source_size=job.source_size||job.file.size;job.file=new Blob();job.items=[];}
+ else job.status=job.items.some(i=>i.error)?'partial':'ready';
+ await localPut('imports',job);
+}
 export const pendingImports=async()=>(await localAll('imports')).filter(j=>j.status!=='completed');
 export const removeImport=job=>localDelete('imports',job.id);

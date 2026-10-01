@@ -1,10 +1,11 @@
+import {researchFor} from './research.ts';
 import {reflectionStatements} from './reflection.ts';
 import {stmt,rows,id,now,digest,type Harvest,type AiContext,type Capture,type Asset,type View} from './core.ts';
 
 export async function contextFor(env:Env,c:Capture,assets:Asset[]):Promise<AiContext>{
  const [prior,concepts,views]=await Promise.all([
   rows<{id:string;version:number;source_title:string|null;generation_id:string;result:string}>(env,`SELECT c.id,c.version,s.title AS source_title,g.id AS generation_id,h.result FROM captures c JOIN harvests h ON h.capture_id=c.id AND h.version=c.version JOIN generations g ON g.capture_id=c.id AND g.version=c.version LEFT JOIN sources s ON s.id=c.source_id WHERE c.id<>? ORDER BY c.updated_at DESC LIMIT 24`,c.id),
-  rows<{id:string;name:string;description:string}>(env,`SELECT DISTINCT k.id,k.name,k.description FROM nodes n LEFT JOIN concept_mappings m ON m.source_id=n.concept_id JOIN concepts k ON k.id=coalesce(m.target_id,n.concept_id) JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version ORDER BY g.created_at DESC LIMIT 40`),
+  rows<{id:string;name:string;description:string}>(env,`SELECT DISTINCT k.id,k.name,k.description FROM nodes n JOIN generations g ON g.id=n.generation_id JOIN captures c ON c.id=g.capture_id AND c.version=g.version LEFT JOIN concept_mappings m ON m.source_id=n.concept_id LEFT JOIN concept_scopes cs ON cs.capture_id=c.id AND cs.source_id=n.concept_id JOIN concepts k ON k.id=coalesce(cs.concept_id,m.target_id,n.concept_id) ORDER BY g.created_at DESC LIMIT 40`),
   rows<View>(env,'SELECT * FROM views ORDER BY created_at DESC LIMIT 12'),
  ]);
  return {assets,candidates:prior.map(({result,...p})=>({...p,harvest:JSON.parse(result) as Harvest})),concepts,views};
@@ -56,9 +57,10 @@ export async function graphStatements(env:Env,c:Capture,h:Harvest,context:AiCont
 export async function graphFor(env:Env,captureId:string){
  const c=await stmt(env,'SELECT version FROM captures WHERE id=?',captureId).first<{version:number}>();if(!c)return null;
  const g=await stmt(env,'SELECT id FROM generations WHERE capture_id=? AND version=?',captureId,c.version).first<{id:string}>();
- if(!g)return {nodes:[],relations:[],comparisons:[]};
+ const external=(await researchFor(env,captureId)).filter(r=>r.state==='completed'&&r.capture_version===c.version&&r.result).map(r=>({research_id:r.id,question:r.question,evidence:r.result.evidence,connections:r.result.connections||[]}));
+ if(!g)return {nodes:[],relations:[],comparisons:[],external};
  const [nodes,relations,comparisons]=await Promise.all([
-  rows(env,'SELECT * FROM nodes WHERE generation_id=?',g.id),rows(env,'SELECT * FROM relations WHERE generation_id=?',g.id),
+  rows(env,`SELECT n.*,coalesce(cs.concept_id,m.target_id,n.concept_id) AS effective_concept_id FROM nodes n LEFT JOIN concept_mappings m ON m.source_id=n.concept_id LEFT JOIN concept_scopes cs ON cs.capture_id=? AND cs.source_id=n.concept_id WHERE n.generation_id=?`,captureId,g.id),rows(env,'SELECT * FROM relations WHERE generation_id=?',g.id),
   rows(env,`SELECT x.* FROM comparisons x JOIN generations t ON t.id=x.target_generation_id JOIN captures c ON c.id=t.capture_id AND c.version=t.version WHERE x.generation_id=?`,g.id),
- ]);return {generation_id:g.id,nodes,relations,comparisons};
+ ]);return {generation_id:g.id,nodes,relations,comparisons,external};
 }

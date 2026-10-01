@@ -1,4 +1,4 @@
-import {saveExternal,queueResearch,adoptResearch} from './research.ts';
+import {saveExternal,queueResearch,adoptResearch,changeExternal,controlResearch} from './research.ts';
 import {searchCaptures,semanticSearch,conceptDetail,organizeConcept} from './discovery.ts';
 import {currentReflection,revisit} from './reflection.ts';
 import {Buffer} from 'node:buffer';
@@ -14,7 +14,7 @@ function headers(response:Response,env:Env){
  const result=new Response(response.body,response);
  result.headers.set('Cache-Control','no-store');result.headers.set('X-Content-Type-Options','nosniff');
  result.headers.set('Referrer-Policy','same-origin');
- result.headers.set('Content-Security-Policy',"default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+ result.headers.set('Content-Security-Policy',"default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
  result.headers.set('Permissions-Policy','camera=(self), microphone=(self), geolocation=()');
  if(env.APP_ORIGIN?.startsWith('https:'))result.headers.set('Strict-Transport-Security','max-age=31536000');return result;
 }
@@ -54,7 +54,7 @@ async function deleteCapture(request:Request,env:Env,captureId:string){
   stmt(env,`INSERT OR IGNORE INTO capture_tombstones SELECT id,? FROM captures WHERE id=? AND version=?`,now(),captureId,base),
   stmt(env,`INSERT OR IGNORE INTO object_deletions(object_key,created_at) SELECT a.object_key,? FROM assets a JOIN captures c ON c.id=a.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
   stmt(env,'DELETE FROM captures WHERE id=? AND version=?',captureId,base),
-  stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL) AND id NOT IN(SELECT target_id FROM concept_mappings WHERE source_id IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL))'),
+  stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL) AND id NOT IN(SELECT concept_id FROM concept_scopes) AND id NOT IN(SELECT source_id FROM concept_scopes) AND id NOT IN(SELECT target_id FROM concept_mappings WHERE source_id IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL))'),
   stmt(env,"DELETE FROM settings WHERE key='current_source' AND value IN (SELECT id FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL))"),
   stmt(env,'DELETE FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL)'),
  ]);
@@ -69,7 +69,7 @@ function exportData(env:Env){
  const stream=new ReadableStream<Uint8Array>({async start(controller){
   try{
    controller.enqueue(encoder.encode(`{"format":"manga-harvester/v3","exported_at":${JSON.stringify(new Date().toISOString())}`));
-   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides','reflections','revisit_events','concept_actions','concept_mappings','concept_aliases','external_sources','research_runs']){
+   for(const table of ['sources','captures','capture_revisions','harvests','views','view_revisions','asset_transcripts','assets','generations','concepts','nodes','relations','comparisons','reactions','proposals','overrides','reflections','revisit_events','concept_actions','concept_mappings','concept_aliases','external_sources','research_runs','external_revisions','capture_imports','import_assets','concept_scopes']){
     controller.enqueue(encoder.encode(`,${JSON.stringify(table)}:[`));let offset=0,first=true;
     while(true){
      const records=await rows<Record<string,unknown>>(env,`SELECT * FROM ${table} ORDER BY rowid LIMIT 50 OFFSET ?`,offset);
@@ -108,15 +108,18 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
  if(path==='/api/search'&&method==='POST')return json(await semanticSearch(env,text((await jsonBody(request)).query,200)));
  if(path==='/api/state'&&method==='GET'){
   const day=new Date().toISOString().slice(0,10);
-  const [captures,views,current,usage,reflection]=await Promise.all([
+  const [captures,views,current,usage,reflection,instance]=await Promise.all([
    list(env,(url.searchParams.get('q')||'').slice(0,200)),rows<View>(env,'SELECT * FROM views ORDER BY created_at DESC LIMIT 100'),
    stmt(env,"SELECT s.* FROM sources s JOIN settings t ON t.value=s.id WHERE t.key='current_source'").first(),
    stmt(env,'SELECT calls FROM ai_daily WHERE day=?',day).first<{calls:number}>(),currentReflection(env),
+   stmt(env,"SELECT value FROM settings WHERE key='instance_id'").first<{value:string}>(),
   ]);
-  return json({ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
+  return json({instance_id:instance?.value,ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
  }
- const researchMatch=/^\/api\/research\/([a-f0-9-]{36})\/adopt$/.exec(path);
- if(researchMatch&&method==='POST')return json(await adoptResearch(request,env,researchMatch[1]));
+ const externalMatch=/^\/api\/external-sources\/([a-f0-9-]{36})$/.exec(path);
+ if(externalMatch&&['PATCH','DELETE'].includes(method))return json(await changeExternal(request,env,externalMatch[1]));
+ const researchMatch=/^\/api\/research\/([a-f0-9-]{36})\/(adopt|cancel|retry)$/.exec(path);
+ if(researchMatch&&method==='POST'){if(researchMatch[2]==='adopt')return json(await adoptResearch(request,env,researchMatch[1]));const result=await controlResearch(env,researchMatch[1],researchMatch[2]);ctx.waitUntil(dispatch(env));return json(result);}
  const conceptMatch=/^\/api\/concepts\/([a-f0-9-]{36})$/.exec(path);
  if(conceptMatch&&method==='GET')return json(await conceptDetail(env,conceptMatch[1]));
  if(conceptMatch&&method==='POST')return json(await organizeConcept(env,conceptMatch[1],await jsonBody(request)));

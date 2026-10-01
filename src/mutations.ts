@@ -8,8 +8,11 @@ async function duplicate(env:Env,key:string,hash:string,target?:string){
 }
 function assetsSQL(env:Env,captureId:string,input:Input,keys:string[],mutation:string,start:number){
  const sql:D1PreparedStatement[]=[];
+ const imported=input.import_receipt,importId=id();
+ if(imported)sql.push(stmt(env,`INSERT INTO capture_imports SELECT ?,id,?,?,?,?,? FROM captures WHERE id=? AND mutation_id=?`,importId,imported.source_hash,imported.source_name,imported.source_size,imported.format,now(),captureId,mutation));
  for(let i=0;i<input.assets.length;i++){
-  const a=input.assets[i];sql.push(stmt(env,`INSERT INTO assets(id,capture_id,object_key,name,mime,size,upload_index,created_at) SELECT ?,id,?,?,?,?,?,? FROM captures WHERE id=? AND mutation_id=?`,id(),keys[i],a.name,a.mime,a.bytes.length,start+i,now(),captureId,mutation));
+  const a=input.assets[i],assetId=id();sql.push(stmt(env,`INSERT INTO assets(id,capture_id,object_key,name,mime,size,upload_index,created_at) SELECT ?,id,?,?,?,?,?,? FROM captures WHERE id=? AND mutation_id=?`,assetId,keys[i],a.name,a.mime,a.bytes.length,start+i,now(),captureId,mutation));
+  if(imported)sql.push(stmt(env,`INSERT INTO import_assets SELECT ?,id,? FROM assets WHERE id=?`,importId,imported.conversion_keys[i],assetId));
   sql.push(stmt(env,'DELETE FROM staged_uploads WHERE object_key=? AND EXISTS(SELECT 1 FROM assets WHERE object_key=?)',keys[i],keys[i]));
  }return sql;
 }
