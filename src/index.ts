@@ -18,7 +18,7 @@ function headers(response:Response,env:Env){
 async function list(env:Env,search:string){
  const escaped=`%${search.replace(/[\\%_]/g,'\\$&')}%`;
  const data=await rows<Capture&{result:string|null;state:string;error_code:string|null;original_preview:string}>(env,`SELECT c.id,c.kind,c.version,c.created_at,c.source_inherited,
- s.title AS source_title,s.certainty AS source_certainty,j.state,j.error_code,h.result,substr(c.original_text,1,100) AS original_preview
+ s.title AS source_title,s.certainty AS source_certainty,j.state,j.error_code,h.result,substr(CASE WHEN c.note<>'' THEN c.note ELSE c.original_text END,1,100) AS original_preview
  FROM captures c LEFT JOIN sources s ON s.id=c.source_id LEFT JOIN jobs j ON j.capture_id=c.id AND j.version=c.version
  LEFT JOIN harvests h ON h.capture_id=c.id AND h.version=c.version
  WHERE ?='' OR c.original_text LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\' OR h.result LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\'
@@ -47,6 +47,7 @@ async function deleteCapture(request:Request,env:Env,captureId:string){
  const result=await env.DB.batch([
   stmt(env,`INSERT OR IGNORE INTO object_deletions(object_key,created_at) SELECT a.object_key,? FROM assets a JOIN captures c ON c.id=a.capture_id WHERE c.id=? AND c.version=?`,now(),captureId,base),
   stmt(env,'DELETE FROM captures WHERE id=? AND version=?',captureId,base),
+  stmt(env,'DELETE FROM concepts WHERE id NOT IN(SELECT concept_id FROM nodes WHERE concept_id IS NOT NULL)'),
   stmt(env,"DELETE FROM settings WHERE key='current_source' AND value IN (SELECT id FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL))"),
   stmt(env,'DELETE FROM sources WHERE id NOT IN(SELECT source_id FROM captures WHERE source_id IS NOT NULL)'),
  ]);
