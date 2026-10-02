@@ -56,6 +56,10 @@ book-harvesterの保存・認証・ジョブの基本パターンを参照しま
 | CaptureImport / ImportAsset | 元ファイルの指紋と選択した変換画像の対応（内部情報） |
 | CaptureTombstone / RetiredRequest | 削除済みの記録を古い保存操作で復活させない記録 |
 
+## 公開先
+
+Web版は https://manga-harvester.mashstock.workers.dev です。本番の配置・設定状況は[docs/deployment.md](docs/deployment.md)を参照してください。
+
 ## ローカル起動
 
 Node.js 24以上。
@@ -104,7 +108,7 @@ TEST_APP_PASSWORD='<dev password>' npm run test:integration
 
 ## デプロイ準備
 
-`wrangler.jsonc` はdev／productionでD1・R2・Queueを分離しています。現在のD1 IDとproduction originはプレースホルダーです。実リソースを作成して置換します。
+`wrangler.jsonc` はdev／productionでD1・R2・Queueを分離しています。productionのD1 IDとoriginは実値を設定済みです。devのD1 IDはローカル検証用のプレースホルダーのため、オンラインdev環境を作る際に置換してください。以下は新規環境を準備する場合の手順です。
 
 ```sh
 npx wrangler d1 create manga-harvester
