@@ -3,7 +3,7 @@ import {searchCaptures,semanticSearch,conceptDetail,organizeConcept} from './dis
 import {currentReflection,revisit} from './reflection.ts';
 import {Buffer} from 'node:buffer';
 import {HttpError,fail,text,version,jsonBody,stmt,rows,getCapture,now,type Capture,type Harvest,type Asset,type View} from './core.ts';
-import {loggedIn,login,logout,usesAccess} from './auth.ts';
+import {loggedIn,login,logout,usesAccess,accessLoggedIn} from './auth.ts';
 import {dispatch,cleanup,consume} from './queue.ts';
 import {graphFor} from './graph.ts';
 import {AiError} from './ai.ts';
@@ -97,7 +97,7 @@ function exportData(env:Env){
 async function route(request:Request,env:Env,ctx:ExecutionContext){
  const url=new URL(request.url),path=url.pathname,method=request.method;
  const accessMode=usesAccess(env);
- if(accessMode&&!await loggedIn(request,env))fail(401,'Cloudflareでログインし直してください。');
+ if(accessMode&&!await accessLoggedIn(request,env,ctx))fail(401,'Cloudflareでログインし直してください。');
  if(!['GET','HEAD'].includes(method)&&request.headers.get('origin')!==env.APP_ORIGIN)fail(403,'この画面から操作し直してください。');
  if(path==='/healthz'&&method==='GET')return json({ok:true});
  if(path==='/api/login'&&method==='POST'){

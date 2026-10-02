@@ -14,11 +14,11 @@
 
 ## 認証とAI
 
-本番はCloudflare AccessでWorker全体（静的画面、API、原資料、書き出し）を保護します。Cloudflareアカウント認証だけを使い、`kdob1042@gmail.com` とアカウントメンバー条件の両方を必須にしたallow policy一つだけを設定しています。アプリ内パスワードは不要で、本番の`APP_PASSWORD` secretは削除します。古い`mh_session` Cookieは本番の認証に使いません。
+本番はCloudflare AccessでWorker全体（静的画面、API、原資料、書き出し）を保護します。Cloudflareアカウント認証だけを使い、`kdob1042@gmail.com` とアカウントメンバー条件の両方を必須にしたallow policy一つだけを設定しています。アプリ内パスワードは不要で、本番の`APP_PASSWORD` secretは削除済みです。古い`mh_session` Cookieは本番の認証に使いません。
 
 Access application: `1b88e5d9-428d-4b64-904b-1b62c93794d8`。Worker destination: `17412cb56ec143b3a653dbc4c58170e6`。本番変数`AUTH_MODE=cloudflare-access`、`ACCESS_AUD`、`ACCESS_TEAM_DOMAIN`、`ACCESS_OWNER_EMAIL`をwrangler.jsoncに記録しています。
 
-Workers Static Assetsの内部ルーターは`ctx.access`をWorkerへ渡さないため、Worker側は`Cf-Access-Jwt-Assertion`のRS256署名・issuer・audience・有効期限・本人メールをjoseで検証します。未設定や検証失敗は、静的画面を含めて拒否します。署名のないメールヘッダーは信用しません。
+Worker側は取得できる場合には`ctx.access`の対象アプリと本人メールを照合します。Workers Static Assetsの内部ルーターなどでruntime identityやassertionヘッダーが渡らない場合には、Cloudflareが自動設定する`CF_Authorization` Cookieも受け取り、RS256署名・issuer・audience・有効期限・本人メールをjoseで検証します。未設定や検証失敗は、静的画面を含めて拒否します。署名のないメールヘッダーは信用しません。ユーザーによるトークンのコピー・登録は不要です。
 
 「閉じる」は端末データを消し、`/cdn-cgi/access/logout`へ移動します。これはCloudflare Accessの他アプリのセッションもログアウトする仕様です。セッション切れでは端末内の未送信メモを保持し、ログイン後に同期を再開します。
 

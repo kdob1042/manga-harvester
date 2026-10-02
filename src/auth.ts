@@ -4,10 +4,15 @@ import { digest,stmt,now } from './core.ts';
 
 export const usesAccess=(env:Env)=>env.AUTH_MODE==='cloudflare-access';
 const keySets=new Map<string,ReturnType<typeof createRemoteJWKSet>>();
-export async function accessLoggedIn(request:Request,env:Env) {
+export async function accessLoggedIn(request:Request,env:Env,ctx?:ExecutionContext) {
+ if(!env.ACCESS_AUD||!env.ACCESS_OWNER_EMAIL)return false;
+ if(ctx?.access){
+  if(ctx.access.aud!==env.ACCESS_AUD)return false;
+  try{const identity=await ctx.access.getIdentity();if(identity?.email)return identity.email.toLowerCase()===env.ACCESS_OWNER_EMAIL.toLowerCase();}catch{/* Verify the application cookie when runtime identity is unavailable. */}
+ }
  // Static Assets' internal router does not forward ctx.access. Verify the
  // signed Access assertion, never the unsigned authenticated-email header.
- const token=request.headers.get('Cf-Access-Jwt-Assertion');
+ const token=request.headers.get('Cf-Access-Jwt-Assertion')||/(?:^|;\s*)CF_Authorization=([^;]+)/.exec(request.headers.get('cookie')||'')?.[1];
  if(!token||!env.ACCESS_AUD||!env.ACCESS_OWNER_EMAIL||!env.ACCESS_TEAM_DOMAIN)return false;
  try{
   const issuer=new URL(env.ACCESS_TEAM_DOMAIN);
@@ -15,7 +20,7 @@ export async function accessLoggedIn(request:Request,env:Env) {
   const origin=issuer.origin;
   let keys=keySets.get(origin);
   if(!keys){keys=createRemoteJWKSet(new URL(`${origin}/cdn-cgi/access/certs`));keySets.set(origin,keys);}
-  const {payload}=await jwtVerify(token,keys,{issuer:origin,audience:env.ACCESS_AUD,algorithms:['RS256'],requiredClaims:['exp','iat','sub','email']});
+  const {payload}=await jwtVerify(token,keys,{issuer:origin,audience:env.ACCESS_AUD,algorithms:['RS256'],requiredClaims:['exp','sub','email']});
   return typeof payload.email==='string'&&payload.email.toLowerCase()===env.ACCESS_OWNER_EMAIL.toLowerCase();
  }catch{return false;}
 }
