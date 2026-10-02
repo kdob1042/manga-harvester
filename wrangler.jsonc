@@ -1,0 +1,111 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "manga-harvester-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "vars": {
+    "APP_ORIGIN": "http://localhost:8791",
+    "OPENAI_MODEL": "gpt-4.1-mini",
+    "OPENAI_TRANSCRIBE_MODEL": "gpt-4o-mini-transcribe",
+    "AI_DAILY_CALL_LIMIT": "60",
+    "AI_MAX_OUTPUT_TOKENS": "6500"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "manga-harvester-dev",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ORIGINALS",
+      "bucket_name": "manga-harvester-dev-originals"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "HARVEST_QUEUE",
+        "queue": "manga-harvester-dev-harvest"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "manga-harvester-dev-harvest",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "env": {
+    "production": {
+      "name": "manga-harvester",
+      "vars": {
+        "APP_ORIGIN": "https://manga-harvester.invalid",
+        "OPENAI_MODEL": "gpt-4.1-mini",
+        "OPENAI_TRANSCRIBE_MODEL": "gpt-4o-mini-transcribe",
+        "AI_DAILY_CALL_LIMIT": "60",
+        "AI_MAX_OUTPUT_TOKENS": "6500"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "manga-harvester",
+          "database_id": "00000000-0000-0000-0000-000000000002",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "ORIGINALS",
+          "bucket_name": "manga-harvester-originals"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "HARVEST_QUEUE",
+            "queue": "manga-harvester-harvest"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "manga-harvester-harvest",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 3
+          }
+        ]
+      },
+      "triggers": {
+        "crons": [
+          "* * * * *"
+        ]
+      }
+    }
+  }
+}

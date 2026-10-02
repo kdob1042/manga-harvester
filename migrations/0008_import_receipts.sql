@@ -1,0 +1,2 @@
+CREATE TABLE capture_imports(id TEXT PRIMARY KEY,capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,source_hash TEXT NOT NULL,source_name TEXT NOT NULL,source_size INTEGER NOT NULL,format TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE import_assets(import_id TEXT NOT NULL REFERENCES capture_imports(id) ON DELETE CASCADE,asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,conversion_key TEXT NOT NULL,PRIMARY KEY(import_id,asset_id));

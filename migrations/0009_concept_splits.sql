@@ -1,0 +1,1 @@
+CREATE TABLE concept_scopes(capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,source_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,action_id TEXT NOT NULL REFERENCES concept_actions(id),PRIMARY KEY(capture_id,source_id));

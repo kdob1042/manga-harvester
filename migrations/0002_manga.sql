@@ -1,0 +1,14 @@
+ALTER TABLE assets ADD COLUMN upload_index INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE capture_revisions ADD COLUMN asset_ids_json TEXT NOT NULL DEFAULT '[]';
+CREATE TABLE mutations (request_key TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE, request_hash TEXT NOT NULL);
+CREATE TABLE generations (id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE, version INTEGER NOT NULL, created_at INTEGER NOT NULL, UNIQUE(capture_id,version));
+CREATE TABLE concepts (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, fingerprint TEXT UNIQUE NOT NULL);
+CREATE TABLE nodes (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, local_id TEXT NOT NULL, kind TEXT NOT NULL, concept_id TEXT REFERENCES concepts(id), data TEXT NOT NULL, UNIQUE(generation_id,local_id));
+CREATE TABLE relations (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, from_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, to_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL, scope TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE comparisons (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, target_generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, kind TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE reactions (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, quote TEXT NOT NULL, kind TEXT NOT NULL, interpretation TEXT NOT NULL);
+CREATE TABLE proposals (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE CASCADE, view_id TEXT REFERENCES views(id) ON DELETE CASCADE, base_revision INTEGER, data TEXT NOT NULL, adopted_view_id TEXT REFERENCES views(id) ON DELETE SET NULL);
+CREATE TABLE overrides (id TEXT PRIMARY KEY, capture_id TEXT REFERENCES captures(id) ON DELETE CASCADE, kind TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX nodes_concept ON nodes(concept_id);
+CREATE INDEX generation_capture ON generations(capture_id,version);
+CREATE INDEX comparison_target ON comparisons(target_generation_id);

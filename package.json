@@ -1,0 +1,30 @@
+{
+  "name": "manga-harvester",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "npm run prepare:assets && wrangler dev --local --port 8791",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "build": "npm run prepare:assets && wrangler deploy --dry-run --outdir dist --env=\"\"",
+    "types": "wrangler types --include-runtime false --strict-vars false",
+    "migrate": "wrangler d1 migrations apply DB --local",
+    "deploy": "node scripts/deploy.mjs",
+    "test:integration": "node scripts/integration.mjs",
+    "test:browser": "npm run prepare:assets && node scripts/browser-qa.mjs",
+    "prepare:assets": "node scripts/assets.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.19.0",
+    "fflate": "0.8.2",
+    "pdfjs-dist": "6.3.289",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.145.0"
+  }
+}
