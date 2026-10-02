@@ -23,9 +23,8 @@
 | #5 外部資料 | 公開URL・抜き書きの別資料層、版付き訂正・削除履歴、明示した問いの予算付き調査、取得済み出典に限る根拠、既存Claimへの条件付き接続、漫画観案の明示採用、キャンセル |
 | #6 探索・概念整理 | 一言・表現・仕組みの語句検索、EnterでAIによる意味検索、完全一致の根拠抜き書き、詳細内の局所関係リスト、概念の別名・統合・一部のメモの意味分割・取り消し |
 | #7 PWA・圏外記録 | インストール用manifest、静的画面だけのService Worker、IndexedDBの元写真／音声／文章とoutbox、復帰・再表示時の同期、応答喪失時の同一キー再送、削除済みキー拒否、競合の確認、端末原資料の書き出し |
-| #8 iOS | SwiftUI／カメラ連続撮影／複数写真選択／M4A録音／画像・文章・URLの共有拡張。App Group内の原資料、撮影途中の復帰、固定保存キー、origin／instance照合、Cookie認証、Webの閲覧・採用を再利用 |
 
-実装と検証状況は[docs/verification.md](docs/verification.md)、iOSの設定・ビルドは[ios/README.md](ios/README.md)。実APIの品質、本番、実端末の確認を残し、Issuesは開いたままにしています。
+実装と検証状況は[docs/verification.md](docs/verification.md)。実APIの品質、本番、実端末の確認を残し、Issuesは開いたままにしています。スマホネイティブ（#8）は今回のWeb版に含めず、ソースは[codex/manga-native-ios](https://github.com/kdob1042/manga-harvester/tree/codex/manga-native-ios/ios)に保持しています。
 
 ## 取り込み・端末保存の範囲
 
@@ -131,4 +130,4 @@ APP_ORIGIN='https://your-app' APP_PASSWORD='<password>' node scripts/rebuild.mjs
 
 ## 残りの完了条件
 
-実OpenAI APIでの品質確認、実Cloudflare環境へのデプロイ、実端末での録音を含む最終確認が未実施です。追加Issue #3〜#8（振り返り、取り込み拡張、外部資料、高度検索／グラフUI、オフライン、ネイティブ）は未実装です。
+実OpenAI APIでの品質確認、実Cloudflare環境へのデプロイ、実端末での録音を含む最終確認が未実施です。追加Issue #3〜#7（振り返り、取り込み拡張、外部資料、検索／局所グラフ、PWA／オフライン）は実装済みです。スマホネイティブ（#8）は別ブランチに保持し、Web版のマージ対象から外しています。

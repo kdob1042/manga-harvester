@@ -5,6 +5,3 @@ dist/
 .env*
 artifacts/
 public/vendor/
-ios/Generated/
-ios/*.xcodeproj/
-ios/build/
