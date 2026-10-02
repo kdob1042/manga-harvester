@@ -9,6 +9,9 @@ export async function rememberState(state){
   await clearLocal();
  }
  await localPut('meta',{id:'session',active:true,instance_id:state.instance_id});await localPut('meta',{id:'state',value:state});
+ // A fresh authenticated state makes session-expiry failures retryable. Keep
+ // version conflicts and other permanent failures blocked for user review.
+ for(const pending of await pendingUploads())if(pending.instance_id===state.instance_id&&pending.error?.status===401){pending.error=null;await localPut('outbox',pending);}
 }
 export async function offlineState(){const session=await localGet('meta','session');if(!session?.active)return null;return (await localGet('meta','state'))?.value;}
 export async function pendingUploads(){return (await localAll('outbox')).sort((a,b)=>a.created_at-b.created_at);}

@@ -113,6 +113,24 @@ try{
  await expect(page.locator('[data-import-key]').first()).toBeDisabled();await page.locator('[data-import-key]').last().check();await page.locator('#save-import').click();await expect(page.getByRole('dialog')).not.toBeVisible();
  await page.reload();await expect(page.locator('.capture-row')).toHaveCount(7);await page.locator('.capture-row').first().click();
  await expect(page.locator('.photo-strip img')).toHaveCount(1);await page.getByText('原資料・訂正など',{exact:true}).click();await expect(page.getByText(/取り込み元：photos.cbz/)).toBeVisible();
+ // Access may return an HTML 401, rather than app JSON, when a session expires.
+ // Verify the UI preserves the outbox and shows SSO, without a password form.
+ await page.evaluate(async()=>{
+  const {localGet,localPut}=await import('/local.js');const session=await localGet('meta','session');
+  for(const [id,status] of [['auth-expired',401],['version-conflict',409]])await localPut('outbox',{id,key:id,instance_id:session.instance_id,created_at:Date.now(),files:[],note:'未送信の一言',error:{status,blocked:true}});
+ });
+ await page.route('**/api/state**',async route=>{
+  if(route.request().headers()['x-requested-with']!=='XMLHttpRequest')throw new Error('Missing Access AJAX header');
+  await route.fulfill({status:401,contentType:'text/html',body:'Access session expired'});
+ });
+ await page.reload();await expect(page.getByRole('button',{name:'Cloudflareで開く',exact:true})).toBeVisible();await expect(page.locator('#password')).toHaveCount(0);
+ const retained=await page.evaluate(async()=>{
+  const {localGet}=await import('/local.js');const {offlineState,rememberState,pendingUploads}=await import('/offline.js');
+  if(await offlineState())throw new Error('Expired session remains active');
+  const saved=(await localGet('meta','state')).value;await rememberState({...saved,auth_mode:'cloudflare-access'});
+  return (await pendingUploads()).map(p=>({id:p.id,error:p.error}));
+ });
+ if(retained.find(p=>p.id==='auth-expired')?.error!==null||retained.find(p=>p.id==='version-conflict')?.error?.status!==409)throw new Error('Reauthentication must resume only auth failures');
  if(errors.length)throw new Error(errors.join('\n'));
  console.log('Browser QA passed: 390/1280px, one primary action, multi-photo + comment, paste, save/reload, original images, comparison, adoption/edit/history, microphone fallback, no overflow.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));f.sqlite.close();}

@@ -3,7 +3,7 @@ import {searchCaptures,semanticSearch,conceptDetail,organizeConcept} from './dis
 import {currentReflection,revisit} from './reflection.ts';
 import {Buffer} from 'node:buffer';
 import {HttpError,fail,text,version,jsonBody,stmt,rows,getCapture,now,type Capture,type Harvest,type Asset,type View} from './core.ts';
-import {loggedIn,login,logout} from './auth.ts';
+import {loggedIn,login,logout,usesAccess} from './auth.ts';
 import {dispatch,cleanup,consume} from './queue.ts';
 import {graphFor} from './graph.ts';
 import {AiError} from './ai.ts';
@@ -96,6 +96,8 @@ function exportData(env:Env){
 
 async function route(request:Request,env:Env,ctx:ExecutionContext){
  const url=new URL(request.url),path=url.pathname,method=request.method;
+ const accessMode=usesAccess(env);
+ if(accessMode&&!await loggedIn(request,env))fail(401,'Cloudflareでログインし直してください。');
  if(!['GET','HEAD'].includes(method)&&request.headers.get('origin')!==env.APP_ORIGIN)fail(403,'この画面から操作し直してください。');
  if(path==='/healthz'&&method==='GET')return json({ok:true});
  if(path==='/api/login'&&method==='POST'){
@@ -103,8 +105,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
   return json(result.status===200?{ok:true}:{error:result.error},result.status,result.cookie?{'Set-Cookie':result.cookie}:{});
  }
  if(!path.startsWith('/api/'))return env.ASSETS.fetch(request);
- if(!await loggedIn(request,env))fail(401,'ログインしてください。');
- if(path==='/api/logout'&&method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
+ if(!accessMode&&!await loggedIn(request,env))fail(401,'ログインしてください。');
+ if(path==='/api/logout'&&method==='POST')return json({ok:true,...(accessMode?{logout_url:'/cdn-cgi/access/logout'}:{})},200,{'Set-Cookie':await logout(request,env)});
  if(path==='/api/search'&&method==='POST')return json(await semanticSearch(env,text((await jsonBody(request)).query,200)));
  if(path==='/api/state'&&method==='GET'){
   const day=new Date().toISOString().slice(0,10);
@@ -114,7 +116,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext){
    stmt(env,'SELECT calls FROM ai_daily WHERE day=?',day).first<{calls:number}>(),currentReflection(env),
    stmt(env,"SELECT value FROM settings WHERE key='instance_id'").first<{value:string}>(),
   ]);
-  return json({instance_id:instance?.value,ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
+  return json({auth_mode:accessMode?'cloudflare-access':'password',instance_id:instance?.value,ai_configured:Boolean(env.OPENAI_API_KEY),captures,views,reflection,current_source:current,usage:{calls:usage?.calls||0},daily_limit:Number(env.AI_DAILY_CALL_LIMIT)});
  }
  const externalMatch=/^\/api\/external-sources\/([a-f0-9-]{36})$/.exec(path);
  if(externalMatch&&['PATCH','DELETE'].includes(method))return json(await changeExternal(request,env,externalMatch[1]));
@@ -176,7 +178,7 @@ export default {
   try{return headers(await route(request,env,ctx),env);}
   catch(e){
    const message=e instanceof HttpError?e.message:e instanceof AiError?(e.code==='daily_limit'?'今日のAI利用上限に達しました。':e.code==='ai_not_configured'?'AIの設定が必要です。':'資料について回答できませんでした。'):'操作を完了できませんでした。原資料を残したまま、もう一度お試しください。';
-   return headers(json({error:message},e instanceof HttpError?e.status:e instanceof AiError?503:500),env);
+   return headers(json({error:message,auth_mode:usesAccess(env)?'cloudflare-access':'password'},e instanceof HttpError?e.status:e instanceof AiError?503:500),env);
   }
  },
  async scheduled(_event,env){await dispatch(env);await cleanup(env);},

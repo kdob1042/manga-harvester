@@ -10,6 +10,7 @@ let state, currentCapture = null, currentView = null, query = '', semanticQuery 
 let noticeTimer, searchTimer, pollBusy = false, navigation=0;
 const shownReflections = new Set();
 let importController=null, importURLs=[];
+let authMode='cloudflare-access';
 function stopImport(){importController?.abort();importController=null;importURLs.forEach(u=>URL.revokeObjectURL(u));importURLs=[];}
 const errors = {
   ai_not_configured:'原資料は保存済みです。AI設定後に自動で読み取ります。',
@@ -28,8 +29,14 @@ function showNotice(text) {
   noticeTimer = setTimeout(() => { notice.textContent = ''; }, 4500);
 }
 async function api(path, options = {}) {
-  const response = await fetch(path, { credentials:'same-origin', ...options });
-  const data = await response.json();
+  const response = await fetch(path, { credentials:'same-origin', ...options, headers:{...options.headers,'X-Requested-With':'XMLHttpRequest'} });
+  const isJson=response.headers.get('content-type')?.includes('application/json');
+  const data = isJson ? await response.json() : {};
+  if(data.auth_mode)authMode=data.auth_mode;
+  if(response.status===401||response.redirected||!isJson){
+    const error=new Error('ログインし直してください。端末内のメモは残っています。');error.status=401;
+    if(path!=='/api/login'){await lockDevice();closeDialog();login();}throw error;
+  }
   if (!response.ok) {
     const error = new Error(data.error || '通信を確認して、もう一度お試しください。');
     error.status = response.status;
@@ -42,6 +49,10 @@ const json = (method, data) => ({ method, headers:{ 'Content-Type':'application/
 
 function login() {
   currentCapture = null; currentView = null; state = null;
+  if(authMode==='cloudflare-access'){
+    app.innerHTML='<div class="login"><p class="eyebrow">MANGA HARVESTER</p><h1>面白さのメモ。</h1><p>Cloudflareアカウントでログインし直してください。</p><button id="access-login" class="primary">Cloudflareで開く</button></div>';
+    app.removeAttribute('aria-busy');bind('#access-login','click',()=>location.assign('/'));return;
+  }
   app.innerHTML = `<div class="login"><p class="eyebrow">MANGA HARVESTER</p><h1>面白さのメモ。</h1>
     <form id="login-form"><label><span>パスワード</span><input id="password" type="password" required autocomplete="current-password"></label>
     <p id="login-error" class="error" role="alert"></p><button class="primary" type="submit">開く</button></form></div>`;
@@ -82,6 +93,7 @@ async function home() {
   try {next = await api(`/api/state?q=${encodeURIComponent(query)}`);if(!query)await rememberState(next);}
   catch(e){if(e.status)throw e;next=await offlineState();if(!next)throw e;next={...next,offline:true};}
   next.device_pending=await pendingUploads();
+  if(next.auth_mode)authMode=next.auth_mode;
   if(turn!==navigation)return;state = next; currentCapture = null; currentView = null;
   app.innerHTML = `${header()}<section class="intro"><p class="eyebrow">MANGA HARVESTER</p>
     <h1>面白さのメモ。</h1><p>${'写真と一言から、面白さを言葉に。'}</p></section><section id="feed"></section>`;
@@ -126,7 +138,7 @@ async function logoutDevice(){
   const finish=async()=>{
     // Revoke the server session before clearing local data. Offline logout is
     // deferred rather than leaving an authenticated cookie that reopens later.
-    try{await api('/api/logout',json('POST',{}));await forgetDevice();closeDialog();login();}catch(e){showNotice('接続してから閉じてください。端末内のメモは残っています。');}
+    try{const result=await api('/api/logout',json('POST',{}));await forgetDevice();closeDialog();if(result.logout_url)location.assign(result.logout_url);else login();}catch(e){showNotice('接続してから閉じてください。端末内のメモは残っています。');}
   };
   if(pending.length||imports.length){
     modal('保存待ちのメモがあります',`<p>送信待ち${pending.length}件、変換候補${imports.length}件が端末内に残っています。閉じると、この端末の原資料を削除します。</p><button id="logout-export" class="quiet">先に端末内の原資料を書き出す</button><button id="logout-discard" class="primary">端末内のデータを削除して閉じる</button>`);
