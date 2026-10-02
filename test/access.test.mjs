@@ -27,6 +27,12 @@ test('Access protects static files and APIs; only a valid owner assertion replac
   const invalid=[await sign({email:'another@example.com'}),await sign({aud:'another-app'}),await sign({iss:'https://other.cloudflareaccess.com'}),await sign({exp:Math.floor(Date.now()/1000)-10}),'forged',await sign({},(await generateKeyPair('RS256')).privateKey)];
   for(const token of invalid)assert.equal((await send('/api/state',token)).status,401);
   const token=await sign();delete env.APP_PASSWORD;
+  // Worker routes can expose a signed application cookie without the assertion
+  // header. Real application tokens need not carry an iat claim.
+  const cookieToken=await new SignJWT({email:'owner@example.com'}).setProtectedHeader({alg:'RS256',kid:'owner-test'}).setIssuer(env.ACCESS_TEAM_DOMAIN).setAudience(env.ACCESS_AUD).setSubject('owner-id').setExpirationTime('5m').sign(privateKey);
+  for(const path of ['/','/app.js','/api/state','/api/export'])assert.equal((await send(path,null,'GET',undefined,{cookie:`other=value; CF_Authorization=${cookieToken}`})).status,200,path);
+  for(const invalidCookie of invalid)assert.equal((await send('/api/state',null,'GET',undefined,{cookie:`CF_Authorization=${invalidCookie}`})).status,401);
+  assert.equal((await send('/api/state','forged','GET',undefined,{cookie:`CF_Authorization=${cookieToken}`})).status,401);
   assert.equal((await send('/',token)).status,200);
   const state=await send('/api/state',token);assert.equal(state.status,200);assert.equal((await state.json()).auth_mode,'cloudflare-access');
   assert.equal((await send('/api/login',token,'POST',{password:'anything'})).status,404);
@@ -35,4 +41,14 @@ test('Access protects static files and APIs; only a valid owner assertion replac
   const out=await send('/api/logout',token,'POST',{});assert.equal(out.status,200);assert.equal((await out.json()).logout_url,'/cdn-cgi/access/logout');assert.match(out.headers.get('set-cookie'),/Max-Age=0/);
   env.ACCESS_AUD='';assert.equal((await send('/',token)).status,401);
  }finally{globalThis.fetch=actualFetch;sqlite.close();}
+});
+
+test('native Access identity accepts only the configured owner and application',async()=>{
+ const {env,sqlite}=runtime();Object.assign(env,{AUTH_MODE:'cloudflare-access',ACCESS_AUD:'manga-only',ACCESS_OWNER_EMAIL:'owner@example.com'});
+ try{
+  for(const [aud,email,status] of [['manga-only','owner@example.com',200],['another-app','owner@example.com',401],['manga-only','other@example.com',401]]){
+   const ctx={waitUntil(){},access:{aud,async getIdentity(){return {email};}}};
+   assert.equal((await worker.fetch(request('/api/state'),env,ctx)).status,status);
+  }
+ }finally{sqlite.close();}
 });
