@@ -26,5 +26,8 @@
     "pdfjs-dist": "6.3.289",
     "typescript": "^7.0.2",
     "wrangler": "^4.145.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.12"
   }
 }

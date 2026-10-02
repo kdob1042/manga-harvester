@@ -11,7 +11,7 @@
 - 原資料／AIの観察・解釈・条件付き仮説／本人の明示反応を分離します。知見・概念・仕組み・問い・関係は自動保存します。
 - 過去の記録と仕組みを比較し、価値ある比較を最大3件表示。どちらの原写真にも戻れます。
 - 漫画観の案は自動生成し、本人の明示的な採用／編集時だけ現行版を更新します。本文・理由・根拠の改訂履歴を保持します。
-- パスワード認証、非公開画像／音声、日本語検索、原ファイルと知見グラフを含むJSON書き出し、訂正・補足・削除を用意しています。
+- Cloudflareアカウントの本人限定認証、非公開画像／音声、日本語検索、原ファイルと知見グラフを含むJSON書き出し、訂正・補足・削除を用意しています。
 - 再送の重複防止、入力の版、ジョブのリース、上限付き再試行、日次API回数上限を実装。古い解析結果や漫画観案で本人編集を上書きしません。
 
 ## 続けて実装した機能
@@ -114,8 +114,9 @@ TEST_APP_PASSWORD='<dev password>' npm run test:integration
 npx wrangler d1 create manga-harvester
 npx wrangler r2 bucket create manga-harvester-originals
 npx wrangler queues create manga-harvester-harvest
-npx wrangler secret put APP_PASSWORD --env production
 npx wrangler secret put OPENAI_API_KEY --env production
+# Worker単位のCloudflare Accessを設定（本人メール + Cloudflare account member、Cloudflare IdPのみ）
+# productionのACCESS_AUD / ACCESS_TEAM_DOMAIN / ACCESS_OWNER_EMAILも設定
 # wrangler.jsoncのproduction DB ID / APP_ORIGINを実値へ変更
 npm run deploy
 ```
@@ -127,6 +128,8 @@ devも別名のリソースとsecretを設定します。R2 public bucketを有�
 ```sh
 APP_ORIGIN='https://your-app' APP_PASSWORD='<password>' node scripts/rebuild.mjs <capture UUID> [more UUIDs]
 ```
+
+このパスワード方式の再構成CLIはローカル開発専用です。本番の再読み取りは、CloudflareへログインしたWeb画面から行います。
 
 指定記録の版を進めて通常の永続ジョブへ登録します。旧版の分析は更新前と明示して表示し、新しい分析の失敗時にも残します。現在のグラフと比較候補には入力版が一致するものだけを使います。過去24件より古い知見への高度な検索は後続Issueの対象です。
 

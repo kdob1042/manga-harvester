@@ -1,11 +1,31 @@
 import { timingSafeEqual } from 'node:crypto';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { digest,stmt,now } from './core.ts';
 
+export const usesAccess=(env:Env)=>env.AUTH_MODE==='cloudflare-access';
+const keySets=new Map<string,ReturnType<typeof createRemoteJWKSet>>();
+export async function accessLoggedIn(request:Request,env:Env) {
+ // Static Assets' internal router does not forward ctx.access. Verify the
+ // signed Access assertion, never the unsigned authenticated-email header.
+ const token=request.headers.get('Cf-Access-Jwt-Assertion');
+ if(!token||!env.ACCESS_AUD||!env.ACCESS_OWNER_EMAIL||!env.ACCESS_TEAM_DOMAIN)return false;
+ try{
+  const issuer=new URL(env.ACCESS_TEAM_DOMAIN);
+  if(issuer.protocol!=='https:'||!issuer.hostname.endsWith('.cloudflareaccess.com')||issuer.pathname!=='/'||issuer.search||issuer.hash||issuer.port||issuer.username||issuer.password)return false;
+  const origin=issuer.origin;
+  let keys=keySets.get(origin);
+  if(!keys){keys=createRemoteJWKSet(new URL(`${origin}/cdn-cgi/access/certs`));keySets.set(origin,keys);}
+  const {payload}=await jwtVerify(token,keys,{issuer:origin,audience:env.ACCESS_AUD,algorithms:['RS256'],requiredClaims:['exp','iat','sub','email']});
+  return typeof payload.email==='string'&&payload.email.toLowerCase()===env.ACCESS_OWNER_EMAIL.toLowerCase();
+ }catch{return false;}
+}
 export async function loggedIn(request:Request,env:Env) {
+ if(usesAccess(env))return accessLoggedIn(request,env);
  const token=/(?:^|;\s*)mh_session=([a-f0-9]{64})(?:;|$)/.exec(request.headers.get('cookie')||'')?.[1];
  return token ? Boolean(await stmt(env,'SELECT hash FROM sessions WHERE hash=? AND expires>?',await digest(token),now()).first()) : false;
 }
 export async function login(request:Request,env:Env,password:unknown) {
+ if(usesAccess(env))return {status:404,error:'Cloudflareでログインしてください。'};
  if (!env.APP_PASSWORD||env.APP_PASSWORD.length<16) return {status:503,error:'ログインの設定を確認してください。'};
  const address=await digest(request.headers.get('CF-Connecting-IP')||'local');
  const count=await stmt(env,`INSERT INTO login_limits(address,count,reset_at) VALUES(?,1,?)

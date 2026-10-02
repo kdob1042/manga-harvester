@@ -18,7 +18,11 @@
     "OPENAI_MODEL": "gpt-4.1-mini",
     "OPENAI_TRANSCRIBE_MODEL": "gpt-4o-mini-transcribe",
     "AI_DAILY_CALL_LIMIT": "60",
-    "AI_MAX_OUTPUT_TOKENS": "6500"
+    "AI_MAX_OUTPUT_TOKENS": "6500",
+    "AUTH_MODE": "password",
+    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_OWNER_EMAIL": ""
   },
   "d1_databases": [
     {
@@ -68,7 +72,11 @@
         "OPENAI_MODEL": "gpt-4.1-mini",
         "OPENAI_TRANSCRIBE_MODEL": "gpt-4o-mini-transcribe",
         "AI_DAILY_CALL_LIMIT": "60",
-        "AI_MAX_OUTPUT_TOKENS": "6500"
+        "AI_MAX_OUTPUT_TOKENS": "6500",
+        "AUTH_MODE": "cloudflare-access",
+        "ACCESS_AUD": "b0633d660c7504ee1f9bf19243077294086e423eab2e441d68831c565eb5c1b4",
+        "ACCESS_TEAM_DOMAIN": "https://kdob1042.cloudflareaccess.com",
+        "ACCESS_OWNER_EMAIL": "kdob1042@gmail.com"
       },
       "d1_databases": [
         {
